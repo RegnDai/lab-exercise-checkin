@@ -1,3 +1,6 @@
+import hashlib
+import unicodedata
+
 import hmac
 import re
 from datetime import datetime
@@ -42,10 +45,29 @@ supabase = get_supabase()
 # -----------------------------
 
 def safe_name(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"\s+", "_", text)
-    text = re.sub(r"[^a-zA-Z0-9_\-\u4e00-\u9fff]", "", text)
-    return text[:50] or "unknown"
+    """
+    Supabase Storage object key should stay ASCII-safe.
+    Keep a readable ASCII slug when possible, and append a short hash
+    so Chinese names or duplicate names still produce stable safe paths.
+    """
+    original = text.strip()
+
+    # Convert accents to ASCII when possible
+    normalized = unicodedata.normalize("NFKD", original)
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+
+    # Replace spaces with underscores, remove unsafe chars
+    slug = re.sub(r"\s+", "_", ascii_text)
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "", slug)
+    slug = slug.strip("_-").lower()
+
+    # Stable short hash from original name, supports Chinese safely
+    name_hash = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
+
+    if slug:
+        return f"{slug}-{name_hash}"[:60]
+
+    return f"user-{name_hash}"
 
 
 def check_password(input_value: str, secret_value: str) -> bool:
