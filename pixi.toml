@@ -1,0 +1,12 @@
+[workspace]
+authors = ["RegnDai <daiyuchi2003@gmail.com>"]
+channels = ["conda-forge"]
+name = "lab-exercise-checkin"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.14.5,<3.15"
+uv = ">=0.11.21,<0.12"
