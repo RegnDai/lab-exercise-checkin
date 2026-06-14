@@ -27,6 +27,12 @@ st.set_page_config(
 BUCKET_NAME = st.secrets.get("BUCKET_NAME", "checkin-images")
 MAX_UPLOAD_MB = int(st.secrets.get("MAX_UPLOAD_MB", 3))
 APP_TIMEZONE = st.secrets.get("APP_TIMEZONE", "Asia/Shanghai")
+MIN_SUBMIT_MINUTES = int(
+    st.secrets.get(
+        "MIN_SUBMIT_MINUTES",
+        st.secrets.get("MONTHLY_TARGET_MINUTES_PER_CHECKIN", 30),
+    )
+)
 
 ACTIVITY_TYPES = [
     "健身",
@@ -217,17 +223,6 @@ def get_file_ext(filename: str) -> str:
         return suffix
     return ".jpg"
 
-
-def already_checked_in(name: str, activity_date) -> bool:
-    response = (
-        supabase.table("exercise_checkins")
-        .select("id")
-        .eq("name", name)
-        .eq("activity_date", activity_date.isoformat())
-        .limit(1)
-        .execute()
-    )
-    return len(response.data) > 0
 
 
 def upload_image(uploaded_file, name: str, activity_date) -> dict:
@@ -1117,10 +1112,11 @@ with tab_submit:
 
         duration_min = st.number_input(
             "运动时长（分钟）",
-            min_value=1,
+            min_value=MIN_SUBMIT_MINUTES,
             max_value=600,
-            value=30,
+            value=MIN_SUBMIT_MINUTES,
             step=5,
+            help=f"每次提交至少 {MIN_SUBMIT_MINUTES} 分钟。",
         )
 
         uploaded_file = st.file_uploader(
@@ -1143,8 +1139,8 @@ with tab_submit:
             st.error("姓名不能为空。")
         elif uploaded_file is None:
             st.error("请上传一张截图或照片。")
-        elif already_checked_in(name, activity_date):
-            st.warning("今天已经记录过了。")
+        elif int(duration_min) < MIN_SUBMIT_MINUTES:
+            st.error(f"每次运动记录至少需要 {MIN_SUBMIT_MINUTES} 分钟。")
         else:
             try:
                 file_info = upload_image(uploaded_file, name, activity_date)
@@ -2704,10 +2700,11 @@ with tab_admin:
 
                 edited_duration = st.number_input(
                     "运动时长（分钟）",
-                    min_value=1,
+                    min_value=MIN_SUBMIT_MINUTES,
                     max_value=600,
-                    value=max(current_duration, 1),
+                    value=max(current_duration, MIN_SUBMIT_MINUTES),
                     step=5,
+                    help=f"每条记录至少 {MIN_SUBMIT_MINUTES} 分钟。",
                 )
 
                 edited_note = st.text_area(
