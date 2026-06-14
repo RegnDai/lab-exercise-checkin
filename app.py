@@ -508,7 +508,7 @@ def make_energy_pool_stats(df_month: pd.DataFrame) -> dict:
     active_members = get_active_members()
 
     target_checkins_per_person = int(
-        st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 7)
+        st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 8)
     )
     target_minutes_per_checkin = int(
         st.secrets.get("MONTHLY_TARGET_MINUTES_PER_CHECKIN", 30)
@@ -795,7 +795,7 @@ def get_monthly_goal_settings() -> tuple[int, int]:
     - 7 qualifying sessions per month
     - each qualifying session must be >= 30 minutes
     """
-    target_checkins = int(st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 7))
+    target_checkins = int(st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 8))
     target_minutes = int(st.secrets.get("MONTHLY_TARGET_MINUTES_PER_CHECKIN", 30))
     return target_checkins, target_minutes
 
@@ -1090,7 +1090,7 @@ if not st.session_state.invite_ok:
 # Main tabs
 # -----------------------------
 
-tab_submit, tab_dashboard, tab_goal, tab_admin = st.tabs(["打卡", "总览", "本月目标", "后台"])
+tab_submit, tab_dashboard, tab_goal, tab_selection, tab_gallery, tab_admin = st.tabs(["打卡", "总览", "本月目标", "评选", "相册", "后台"])
 
 
 # -----------------------------
@@ -1171,6 +1171,711 @@ with tab_submit:
             except Exception as e:
                 st.error("提交失败。")
                 st.exception(e)
+
+
+
+
+# -----------------------------
+# Selection board helpers
+# -----------------------------
+
+def _selection_goal_settings() -> tuple[int, int]:
+    target_checkins_per_person = int(
+        st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 8)
+    )
+    target_minutes_per_checkin = int(
+        st.secrets.get("MONTHLY_TARGET_MINUTES_PER_CHECKIN", 30)
+    )
+    return target_checkins_per_person, target_minutes_per_checkin
+
+
+def _selection_active_members(df_all: pd.DataFrame) -> list[str]:
+    active_members = list(st.secrets.get("ACTIVE_MEMBERS", []))
+
+    if active_members:
+        return active_members
+
+    members = list(st.secrets.get("MEMBERS", []))
+
+    if members:
+        return members
+
+    if not df_all.empty and "name" in df_all.columns:
+        return sorted(df_all["name"].dropna().astype(str).unique().tolist())
+
+    return []
+
+
+def _selection_available_months(df_all: pd.DataFrame, today) -> list[str]:
+    months = set()
+
+    if not df_all.empty and "activity_date" in df_all.columns:
+        dates = pd.to_datetime(df_all["activity_date"], errors="coerce").dropna()
+
+        if not dates.empty:
+            months.update(dates.dt.to_period("M").astype(str).tolist())
+
+    months.add(str(pd.Period(today, freq="M")))
+
+    return sorted(months)
+
+
+def _selection_default_months(available_months: list[str], today) -> list[str]:
+    try:
+        default_month_count = int(st.secrets.get("SELECTION_DEFAULT_MONTHS", 3))
+    except Exception:
+        default_month_count = 3
+
+    default_month_count = max(1, min(default_month_count, 24))
+
+    if not available_months:
+        return [str(pd.Period(today, freq="M"))]
+
+    return available_months[-default_month_count:]
+
+
+def _selection_month_label(month_value: str) -> str:
+    try:
+        period = pd.Period(month_value, freq="M")
+        return f"{period.year}年{period.month}月"
+    except Exception:
+        return str(month_value)
+
+
+def make_selection_tables(
+    df_all: pd.DataFrame,
+    today,
+    selected_months: list[str],
+) -> dict:
+    target_checkins, target_minutes = _selection_goal_settings()
+    active_members = _selection_active_members(df_all)
+
+    selected_months = sorted(set(str(x) for x in selected_months if str(x).strip()))
+
+    if not selected_months:
+        selected_months = [str(pd.Period(today, freq="M"))]
+
+    if not df_all.empty:
+        df_period = df_all.copy()
+        df_period["activity_date"] = pd.to_datetime(
+            df_period["activity_date"],
+            errors="coerce",
+        )
+        df_period = df_period.dropna(subset=["activity_date"])
+        df_period["selection_month"] = df_period["activity_date"].dt.to_period("M").astype(str)
+        df_period = df_period[df_period["selection_month"].isin(selected_months)].copy()
+    else:
+        df_period = pd.DataFrame()
+
+    if active_members and not df_period.empty:
+        df_period = df_period[df_period["name"].isin(active_members)].copy()
+
+    if active_members:
+        base = pd.MultiIndex.from_product(
+            [active_members, selected_months],
+            names=["name", "month"],
+        ).to_frame(index=False)
+    else:
+        base = pd.DataFrame(columns=["name", "month"])
+
+    if df_period.empty:
+        monthly = pd.DataFrame(
+            columns=[
+                "name",
+                "month",
+                "月运动次数",
+                "月有效运动次数",
+                "月运动时长",
+            ]
+        )
+    else:
+        temp = df_period.copy()
+        temp["month"] = temp["selection_month"]
+        temp["is_effective"] = temp["duration_min"] >= target_minutes
+
+        monthly = (
+            temp.groupby(["name", "month"], as_index=False)
+            .agg(
+                月运动次数=("id", "count"),
+                月有效运动次数=("is_effective", "sum"),
+                月运动时长=("duration_min", "sum"),
+            )
+        )
+
+    monthly_grid = (
+        base.merge(monthly, on=["name", "month"], how="left")
+        .fillna(
+            {
+                "月运动次数": 0,
+                "月有效运动次数": 0,
+                "月运动时长": 0,
+            }
+        )
+    )
+
+    for col in ["月运动次数", "月有效运动次数", "月运动时长"]:
+        monthly_grid[col] = monthly_grid[col].astype(int)
+
+    monthly_grid["月度达标"] = monthly_grid["月有效运动次数"] >= target_checkins
+
+    if monthly_grid.empty:
+        person_month = pd.DataFrame(
+            {
+                "name": active_members,
+                "达标月份数": [0] * len(active_members),
+                "统计月份数": [len(selected_months)] * len(active_members),
+            }
+        )
+    else:
+        person_month = (
+            monthly_grid.groupby("name", as_index=False)
+            .agg(
+                达标月份数=("月度达标", "sum"),
+                统计月份数=("month", "nunique"),
+            )
+        )
+
+    if df_period.empty:
+        totals = pd.DataFrame(
+            {
+                "name": active_members,
+                "总运动时长": [0] * len(active_members),
+                "总运动次数": [0] * len(active_members),
+                "有效运动次数": [0] * len(active_members),
+            }
+        )
+    else:
+        temp = df_period.copy()
+        temp["is_effective"] = temp["duration_min"] >= target_minutes
+
+        totals = (
+            temp.groupby("name", as_index=False)
+            .agg(
+                总运动时长=("duration_min", "sum"),
+                总运动次数=("id", "count"),
+                有效运动次数=("is_effective", "sum"),
+            )
+        )
+
+    members_df = pd.DataFrame({"name": active_members})
+
+    summary = (
+        members_df.merge(totals, on="name", how="left")
+        .merge(person_month, on="name", how="left")
+        .fillna(
+            {
+                "总运动时长": 0,
+                "总运动次数": 0,
+                "有效运动次数": 0,
+                "达标月份数": 0,
+                "统计月份数": len(selected_months),
+            }
+        )
+    )
+
+    for col in ["总运动时长", "总运动次数", "有效运动次数", "达标月份数", "统计月份数"]:
+        summary[col] = summary[col].astype(int)
+
+    summary["周期目标次数"] = summary["统计月份数"] * target_checkins
+
+    summary["有效次数完成率"] = summary.apply(
+        lambda row: (
+            row["有效运动次数"] / row["周期目标次数"] * 100
+            if row["周期目标次数"] > 0
+            else 0
+        ),
+        axis=1,
+    ).round(1)
+
+    summary["总达标率"] = summary.apply(
+        lambda row: (
+            row["达标月份数"] / row["统计月份数"] * 100
+            if row["统计月份数"] > 0
+            else 0
+        ),
+        axis=1,
+    ).round(1)
+
+    summary["总时长排名"] = summary["总运动时长"].rank(
+        method="min",
+        ascending=False,
+    ).astype(int)
+
+    summary["总次数排名"] = summary["总运动次数"].rank(
+        method="min",
+        ascending=False,
+    ).astype(int)
+
+    summary["达标率排名"] = summary["总达标率"].rank(
+        method="min",
+        ascending=False,
+    ).astype(int)
+
+    summary["满勤候选"] = summary["总达标率"] >= 100
+    summary["进步展示资格"] = summary["总达标率"] >= 50
+
+    summary = summary.rename(columns={"name": "姓名"})
+
+    summary = summary[
+        [
+            "姓名",
+            "总运动时长",
+            "总运动次数",
+            "有效运动次数",
+            "周期目标次数",
+            "有效次数完成率",
+            "达标月份数",
+            "统计月份数",
+            "总达标率",
+            "总时长排名",
+            "总次数排名",
+            "达标率排名",
+            "满勤候选",
+            "进步展示资格",
+        ]
+    ].sort_values(
+        ["总达标率", "总运动时长", "总运动次数"],
+        ascending=False,
+    )
+
+    metric_specs = [
+        ("总运动时长", "总运动时长", "总时长排名"),
+        ("总运动次数", "总运动次数", "总次数排名"),
+        ("总达标率", "总达标率", "达标率排名"),
+    ]
+
+    selection_frames = []
+
+    for metric_name, value_col, rank_col in metric_specs:
+        temp = summary.copy()
+        temp = temp[(temp[rank_col] <= 3) & (temp[value_col] > 0)]
+
+        if temp.empty:
+            continue
+
+        temp["评选指标"] = metric_name
+        temp["指标值"] = temp[value_col]
+        temp["名次"] = temp[rank_col]
+
+        selection_frames.append(
+            temp[
+                [
+                    "姓名",
+                    "评选指标",
+                    "指标值",
+                    "名次",
+                ]
+            ]
+        )
+
+    if selection_frames:
+        selected_candidates = pd.concat(selection_frames, ignore_index=True)
+
+        recommended_items = (
+            selected_candidates.sort_values(
+                ["姓名", "名次"],
+                ascending=[True, True],
+            )
+            .groupby("姓名", as_index=False)
+            .first()
+            .sort_values(["名次", "姓名"], ascending=[True, True])
+        )
+    else:
+        selected_candidates = pd.DataFrame(
+            columns=["姓名", "评选指标", "指标值", "名次"]
+        )
+        recommended_items = selected_candidates.copy()
+
+    full_attendance = summary[summary["满勤候选"]].copy()
+    progress_eligible = summary[summary["进步展示资格"]].copy()
+    below_50 = summary[summary["总达标率"] < 50].copy()
+
+    monthly_detail = monthly_grid.rename(
+        columns={
+            "name": "姓名",
+            "month": "月份",
+        }
+    ).copy()
+
+    if not monthly_detail.empty:
+        monthly_detail["月份"] = monthly_detail["月份"].map(_selection_month_label)
+        monthly_detail["月度达标"] = monthly_detail["月度达标"].map(
+            {True: "是", False: "否"}
+        )
+
+    return {
+        "summary": summary,
+        "selected_candidates": selected_candidates,
+        "recommended_items": recommended_items,
+        "full_attendance": full_attendance,
+        "progress_eligible": progress_eligible,
+        "below_50": below_50,
+        "monthly_detail": monthly_detail,
+        "target_checkins": target_checkins,
+        "target_minutes": target_minutes,
+        "selected_months": selected_months,
+    }
+
+
+def render_selection_board(df_all: pd.DataFrame, today):
+    available_months = _selection_available_months(df_all, today)
+    default_months = _selection_default_months(available_months, today)
+
+    selected_months = st.multiselect(
+        "选择用于评选统计的月份",
+        options=available_months,
+        default=default_months,
+        format_func=_selection_month_label,
+        help="勾选一个或多个自然月。下面的总时长、总次数、总达标率排名都会按所选月份重算。",
+        key="selection_selected_months",
+    )
+
+    if not selected_months:
+        st.warning("请至少选择一个月份。")
+        return
+
+    data = make_selection_tables(df_all, today, selected_months)
+
+    summary = data["summary"]
+    selected_candidates = data["selected_candidates"]
+    recommended_items = data["recommended_items"]
+    full_attendance = data["full_attendance"]
+    progress_eligible = data["progress_eligible"]
+    below_50 = data["below_50"]
+    monthly_detail = data["monthly_detail"]
+
+    selected_label = "、".join(_selection_month_label(x) for x in data["selected_months"])
+
+    st.caption(
+        f"当前统计月份：{selected_label}。"
+        f"达标规则：每月 {data['target_checkins']} 次，"
+        f"每次不少于 {data['target_minutes']} 分钟。"
+    )
+
+    def _top_three(metric_col: str, rank_col: str) -> pd.DataFrame:
+        cols = [
+            "姓名",
+            metric_col,
+            rank_col,
+            "总运动时长",
+            "总运动次数",
+            "总达标率",
+            "达标月份数",
+            "统计月份数",
+        ]
+        cols = list(dict.fromkeys([c for c in cols if c in summary.columns]))
+
+        out = (
+            summary[summary[rank_col] <= 3]
+            .sort_values([rank_col, metric_col], ascending=[True, False])
+            .loc[:, cols]
+            .copy()
+        )
+
+        if "总达标率" in out.columns:
+            out["总达标率"] = out["总达标率"].map(lambda x: f"{float(x):.1f}%")
+
+        return out
+
+    st.markdown("#### 三项排名")
+
+    rank_col1, rank_col2, rank_col3 = st.columns(3)
+
+    with rank_col1:
+        st.markdown("##### 总运动时长前三")
+        top_time = _top_three("总运动时长", "总时长排名")
+        if top_time.empty:
+            st.info("暂无候选。")
+        else:
+            st.dataframe(top_time, use_container_width=True, hide_index=True)
+
+    with rank_col2:
+        st.markdown("##### 总运动次数前三")
+        top_count = _top_three("总运动次数", "总次数排名")
+        if top_count.empty:
+            st.info("暂无候选。")
+        else:
+            st.dataframe(top_count, use_container_width=True, hide_index=True)
+
+    with rank_col3:
+        st.markdown("##### 总达标率前三")
+        top_rate = _top_three("总达标率", "达标率排名")
+        if top_rate.empty:
+            st.info("暂无候选。")
+        else:
+            st.dataframe(top_rate, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    selection_tab1, selection_tab2, selection_tab3 = st.tabs(
+        ["候选汇总", "满勤 / 进步展示", "月度明细"]
+    )
+
+    with selection_tab1:
+        st.caption(
+            "三项评选涉及总运动时长、总运动次数、总达标率。"
+            "同一成员如进入多个项目，最终建议人工确认。"
+        )
+
+        st.markdown("#### 按三项指标分别入围")
+        if selected_candidates.empty:
+            st.info("当前还没有入围候选。")
+        else:
+            candidate_view = selected_candidates.copy()
+            candidate_view["指标值"] = candidate_view.apply(
+                lambda row: f"{float(row['指标值']):.1f}%"
+                if row["评选指标"] == "总达标率"
+                else row["指标值"],
+                axis=1,
+            )
+            st.dataframe(candidate_view, use_container_width=True, hide_index=True)
+
+        st.markdown("#### 每人推荐入围项")
+        if recommended_items.empty:
+            st.info("当前还没有可参考的入围项。")
+        else:
+            recommended_view = recommended_items.copy()
+            recommended_view["指标值"] = recommended_view.apply(
+                lambda row: f"{float(row['指标值']):.1f}%"
+                if row["评选指标"] == "总达标率"
+                else row["指标值"],
+                axis=1,
+            )
+            st.dataframe(recommended_view, use_container_width=True, hide_index=True)
+
+        summary_view = summary.copy()
+        summary_view["有效次数完成率"] = summary_view["有效次数完成率"].map(lambda x: f"{float(x):.1f}%")
+        summary_view["总达标率"] = summary_view["总达标率"].map(lambda x: f"{float(x):.1f}%")
+        summary_view["满勤候选"] = summary_view["满勤候选"].map({True: "是", False: "否"})
+        summary_view["进步展示资格"] = summary_view["进步展示资格"].map({True: "是", False: "否"})
+
+        with st.expander("完整评选指标表"):
+            st.dataframe(summary_view, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                label="导出当前评选指标 CSV",
+                data=summary_view.to_csv(index=False).encode("utf-8-sig"),
+                file_name="selection_metrics_selected_months.csv",
+                mime="text/csv",
+            )
+
+    with selection_tab2:
+        left, right = st.columns(2)
+
+        with left:
+            st.markdown("#### 满勤候选")
+            if full_attendance.empty:
+                st.info("当前没有总达标率 100% 的成员。")
+            else:
+                view = full_attendance[
+                    [
+                        "姓名",
+                        "达标月份数",
+                        "统计月份数",
+                        "总达标率",
+                    ]
+                ].copy()
+                view["总达标率"] = view["总达标率"].map(lambda x: f"{float(x):.1f}%")
+                st.dataframe(view, use_container_width=True, hide_index=True)
+
+        with right:
+            st.markdown("#### 进步展示资格")
+            st.caption("达标率 50% 以上的成员可进入进步展示候选范围。")
+            if progress_eligible.empty:
+                st.info("当前还没有成员达到 50% 资格线。")
+            else:
+                view = progress_eligible[
+                    [
+                        "姓名",
+                        "达标月份数",
+                        "统计月份数",
+                        "总达标率",
+                    ]
+                ].copy()
+                view["总达标率"] = view["总达标率"].map(lambda x: f"{float(x):.1f}%")
+                st.dataframe(view, use_container_width=True, hide_index=True)
+
+    with selection_tab3:
+        st.caption("每个人在所选月份里的逐月达标情况。")
+        st.dataframe(monthly_detail, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            label="导出月度明细 CSV",
+            data=monthly_detail.to_csv(index=False).encode("utf-8-sig"),
+            file_name="selection_monthly_detail_selected_months.csv",
+            mime="text/csv",
+        )
+
+    st.divider()
+
+    with st.expander("记录统计参考"):
+        record_keeper = st.secrets.get("SELECTION_RECORD_KEEPER", "未设置")
+        below_50_count = len(below_50)
+
+        st.caption(
+            "这里仅用于内部记录统计参考，不参与上面的主要排名。"
+        )
+
+        info_col1, info_col2 = st.columns(2)
+
+        with info_col1:
+            st.metric("记录统计负责人", record_keeper)
+
+        with info_col2:
+            st.metric("低于 50% 人数", f"{below_50_count} 人")
+
+        if below_50.empty:
+            st.write("所选月份内没有低于 50% 达标率的成员。")
+        else:
+            view = below_50[
+                [
+                    "姓名",
+                    "达标月份数",
+                    "统计月份数",
+                    "总达标率",
+                ]
+            ].copy()
+            view["总达标率"] = view["总达标率"].map(lambda x: f"{float(x):.1f}%")
+            st.dataframe(view, use_container_width=True, hide_index=True)
+
+
+# -----------------------------
+# Gallery helpers
+# -----------------------------
+
+
+def render_recent_image_gallery(df_all: pd.DataFrame, limit: int = 12):
+    st.markdown("### 运动相册")
+
+    if df_all.empty or "file_path" not in df_all.columns:
+        st.info("还没有可展示的图片。")
+        return
+
+    gallery = df_all.copy()
+    gallery["file_path"] = gallery["file_path"].fillna("").astype(str)
+    gallery = gallery[gallery["file_path"].str.strip() != ""]
+
+    if gallery.empty:
+        st.info("还没有可展示的图片。")
+        return
+
+    sort_col = "submitted_at" if "submitted_at" in gallery.columns else "activity_date"
+    gallery = gallery.sort_values(sort_col, ascending=False).head(limit).reset_index(drop=True)
+
+    if "gallery_index" not in st.session_state:
+        st.session_state.gallery_index = 0
+
+    if st.session_state.gallery_index >= len(gallery):
+        st.session_state.gallery_index = 0
+
+    st.caption("最近上传的运动记录。使用左右按钮切换，也可以在下方缩略图中选择。")
+
+    control_left, control_mid, control_right = st.columns([1, 3, 1])
+
+    with control_left:
+        if st.button("← 上一张", use_container_width=True, key="gallery_prev"):
+            st.session_state.gallery_index = (st.session_state.gallery_index - 1) % len(gallery)
+            st.rerun()
+
+    with control_mid:
+        st.markdown(
+            f"<div style='text-align:center; color:#6b7280; padding-top:0.5rem;'>"
+            f"{st.session_state.gallery_index + 1} / {len(gallery)}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    with control_right:
+        if st.button("下一张 →", use_container_width=True, key="gallery_next"):
+            st.session_state.gallery_index = (st.session_state.gallery_index + 1) % len(gallery)
+            st.rerun()
+
+    row = gallery.iloc[st.session_state.gallery_index]
+    file_path = str(row.get("file_path", "")).strip()
+
+    try:
+        signed_url = create_signed_image_url(file_path)
+    except Exception:
+        signed_url = None
+
+    caption = (
+        f"{row.get('name', '')} ｜ "
+        f"{row.get('activity_date', '')} ｜ "
+        f"{row.get('activity_type', '')} ｜ "
+        f"{row.get('duration_min', '')} 分钟"
+    )
+
+    st.markdown(
+        """
+        <style>
+        .gallery-frame {
+            border-radius: 22px;
+            border: 1px solid rgba(120, 92, 65, 0.14);
+            padding: 0.8rem;
+            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,248,245,0.92));
+            box-shadow: 0 12px 28px rgba(55, 48, 40, 0.07);
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        </style>
+        <div class="gallery-frame">
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if signed_url:
+        st.image(signed_url, caption=caption, use_container_width=True)
+    else:
+        st.warning("这张图片的临时链接生成失败。")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("#### 缩略图")
+
+    thumb_cols = st.columns(4)
+
+    for i, (_, item) in enumerate(gallery.iterrows()):
+        with thumb_cols[i % 4]:
+            thumb_url = None
+            try:
+                thumb_url = create_signed_image_url(str(item.get("file_path", "")).strip())
+            except Exception:
+                thumb_url = None
+
+            if thumb_url:
+                st.image(thumb_url, use_container_width=True)
+
+            label = f"{i + 1}. {item.get('name', '')}"
+            if st.button(label, key=f"gallery_thumb_{i}", use_container_width=True):
+                st.session_state.gallery_index = i
+                st.rerun()
+
+    with st.expander("查看图片对应记录"):
+        display_cols = [
+            col
+            for col in [
+                "name",
+                "activity_date",
+                "activity_type",
+                "duration_min",
+                "note",
+                "submitted_at",
+            ]
+            if col in gallery.columns
+        ]
+
+        records = gallery[display_cols].rename(
+            columns={
+                "name": "姓名",
+                "activity_date": "运动日期",
+                "activity_type": "运动类型",
+                "duration_min": "运动分钟",
+                "note": "备注",
+                "submitted_at": "提交时间",
+            }
+        )
+
+        st.dataframe(records, use_container_width=True, hide_index=True)
 
 
 # -----------------------------
@@ -1512,7 +2217,7 @@ with tab_goal:
     stats = make_energy_pool_stats(df_month)
 
     target_checkins_per_person = int(
-        st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 7)
+        st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 8)
     )
     target_minutes_per_checkin = int(
         st.secrets.get("MONTHLY_TARGET_MINUTES_PER_CHECKIN", 30)
@@ -1601,6 +2306,43 @@ with tab_goal:
         st.bar_chart(contribution_table.set_index("姓名")["能量贡献"])
 
     st.caption("能量池看共同进度；总览保留每个人的完整记录。")
+
+
+
+
+# -----------------------------
+# Selection tab
+# -----------------------------
+
+with tab_selection:
+    st.subheader("运动评选")
+
+    try:
+        df_all = load_checkins()
+    except Exception as e:
+        st.error("读取记录失败。")
+        st.exception(e)
+        st.stop()
+
+    today = get_now_local().date()
+    render_selection_board(df_all, today)
+
+
+# -----------------------------
+# Gallery tab
+# -----------------------------
+
+with tab_gallery:
+    st.subheader("运动相册")
+
+    try:
+        df_all = load_checkins()
+    except Exception as e:
+        st.error("读取记录失败。")
+        st.exception(e)
+        st.stop()
+
+    render_recent_image_gallery(df_all, limit=12)
 
 
 # -----------------------------
