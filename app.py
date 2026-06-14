@@ -3,6 +3,7 @@ import unicodedata
 
 import hmac
 import re
+from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageOps
 from supabase import create_client
 
 
@@ -26,6 +28,13 @@ st.set_page_config(
 
 BUCKET_NAME = st.secrets.get("BUCKET_NAME", "checkin-images")
 MAX_UPLOAD_MB = int(st.secrets.get("MAX_UPLOAD_MB", 3))
+MAX_SOURCE_UPLOAD_MB = int(st.secrets.get("MAX_SOURCE_UPLOAD_MB", 15))
+MAX_STORED_IMAGE_MB = float(st.secrets.get("MAX_STORED_IMAGE_MB", MAX_UPLOAD_MB))
+IMAGE_COMPRESSION_ENABLED = str(
+    st.secrets.get("IMAGE_COMPRESSION_ENABLED", "true")
+).lower() not in ["0", "false", "no", "off"]
+IMAGE_MAX_SIDE = int(st.secrets.get("IMAGE_MAX_SIDE", 1600))
+IMAGE_JPEG_QUALITY = int(st.secrets.get("IMAGE_JPEG_QUALITY", 82))
 APP_TIMEZONE = st.secrets.get("APP_TIMEZONE", "Asia/Shanghai")
 MIN_SUBMIT_MINUTES = int(
     st.secrets.get(
@@ -225,24 +234,107 @@ def get_file_ext(filename: str) -> str:
 
 
 
+
+def compress_image_for_storage(uploaded_file) -> dict:
+    """
+    Compress uploaded images before sending them to Supabase Storage.
+
+    The stored object is JPEG by default:
+    - longest side is capped by IMAGE_MAX_SIDE
+    - quality is controlled by IMAGE_JPEG_QUALITY
+    - transparent PNG/WebP backgrounds are flattened to white
+    """
+    original_bytes = uploaded_file.getvalue()
+    original_size_mb = len(original_bytes) / 1024 / 1024
+
+    if original_size_mb > MAX_SOURCE_UPLOAD_MB:
+        raise ValueError(
+            f"文件太大：{original_size_mb:.2f} MB。"
+            f"原图上限是 {MAX_SOURCE_UPLOAD_MB} MB。"
+        )
+
+    if not IMAGE_COMPRESSION_ENABLED:
+        stored_size_mb = original_size_mb
+
+        if stored_size_mb > MAX_STORED_IMAGE_MB:
+            raise ValueError(
+                f"文件太大：{stored_size_mb:.2f} MB。"
+                f"存储上限是 {MAX_STORED_IMAGE_MB:.1f} MB。"
+            )
+
+        return {
+            "bytes": original_bytes,
+            "ext": get_file_ext(uploaded_file.name),
+            "mime": uploaded_file.type or "application/octet-stream",
+            "size": len(original_bytes),
+        }
+
+    try:
+        image = Image.open(BytesIO(original_bytes))
+        image = ImageOps.exif_transpose(image)
+
+        if IMAGE_MAX_SIDE > 0:
+            resample = getattr(Image, "Resampling", Image).LANCZOS
+            image.thumbnail((IMAGE_MAX_SIDE, IMAGE_MAX_SIDE), resample)
+
+        if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+            rgba = image.convert("RGBA")
+            background = Image.new("RGB", rgba.size, (255, 255, 255))
+            background.paste(rgba, mask=rgba.getchannel("A"))
+            image = background
+        else:
+            image = image.convert("RGB")
+
+        output = BytesIO()
+        quality = max(40, min(int(IMAGE_JPEG_QUALITY), 95))
+
+        image.save(
+            output,
+            format="JPEG",
+            quality=quality,
+            optimize=True,
+            progressive=True,
+        )
+
+        compressed_bytes = output.getvalue()
+        stored_size_mb = len(compressed_bytes) / 1024 / 1024
+
+        if stored_size_mb > MAX_STORED_IMAGE_MB:
+            raise ValueError(
+                f"压缩后仍然太大：{stored_size_mb:.2f} MB。"
+                f"存储上限是 {MAX_STORED_IMAGE_MB:.1f} MB。"
+                "可以降低 IMAGE_MAX_SIDE 或 IMAGE_JPEG_QUALITY。"
+            )
+
+        return {
+            "bytes": compressed_bytes,
+            "ext": ".jpg",
+            "mime": "image/jpeg",
+            "size": len(compressed_bytes),
+        }
+
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError("图片压缩失败。请上传 JPG、PNG 或 WEBP 图片。") from e
+
+
 def upload_image(uploaded_file, name: str, activity_date) -> dict:
-    file_bytes = uploaded_file.getvalue()
-    file_size_mb = len(file_bytes) / 1024 / 1024
+    processed = compress_image_for_storage(uploaded_file)
 
-    if file_size_mb > MAX_UPLOAD_MB:
-        raise ValueError(f"文件太大：{file_size_mb:.2f} MB。上限是 {MAX_UPLOAD_MB} MB。")
-
-    ext = get_file_ext(uploaded_file.name)
     clean_name = safe_name(name)
     unique_id = uuid4().hex
 
-    storage_path = f"{activity_date.isoformat()}/{clean_name}-{unique_id}{ext}"
+    storage_path = (
+        f"{activity_date.isoformat()}/"
+        f"{clean_name}-{unique_id}{processed['ext']}"
+    )
 
     supabase.storage.from_(BUCKET_NAME).upload(
         path=storage_path,
-        file=file_bytes,
+        file=processed["bytes"],
         file_options={
-            "content-type": uploaded_file.type or "application/octet-stream",
+            "content-type": processed["mime"],
             "upsert": "false",
         },
     )
@@ -250,8 +342,8 @@ def upload_image(uploaded_file, name: str, activity_date) -> dict:
     return {
         "file_path": storage_path,
         "file_name": uploaded_file.name,
-        "file_mime": uploaded_file.type,
-        "file_size": len(file_bytes),
+        "file_mime": processed["mime"],
+        "file_size": processed["size"],
     }
 
 
@@ -1120,7 +1212,7 @@ with tab_submit:
         )
 
         uploaded_file = st.file_uploader(
-            f"上传截图或照片（不超过 {MAX_UPLOAD_MB} MB）",
+            f"上传截图或照片（原图不超过 {MAX_SOURCE_UPLOAD_MB} MB，系统会自动压缩）",
             type=["jpg", "jpeg", "png", "webp"],
             accept_multiple_files=False,
         )
@@ -2713,7 +2805,7 @@ with tab_admin:
                 )
 
                 replacement_file = st.file_uploader(
-                    f"替换截图或照片（可选，不超过 {MAX_UPLOAD_MB} MB）",
+                    f"替换截图或照片（可选，原图不超过 {MAX_SOURCE_UPLOAD_MB} MB，系统会自动压缩）",
                     type=["jpg", "jpeg", "png", "webp"],
                     accept_multiple_files=False,
                     key=f"replacement_file_{selected_id}",
