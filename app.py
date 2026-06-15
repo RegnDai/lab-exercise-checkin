@@ -52,6 +52,13 @@ HALF_CREDIT_ACTIVITY_TYPES = list(
 HALF_CREDIT_GOAL_CREDIT = float(st.secrets.get("HALF_CREDIT_GOAL_CREDIT", 0.5))
 HALF_CREDIT_RECORD_CAP = int(st.secrets.get("HALF_CREDIT_RECORD_CAP", 8))
 
+MESSAGE_REACTIONS = [
+    ("pat", "👍", "点赞"),
+    ("flower", "🌸", "给你送花"),
+    ("smile", "😄", "笑死了"),
+    ("cry", "🥲", "感性了"),
+]
+
 ACTIVITY_TYPES = [
     "健身",
     "力量训练",
@@ -2131,6 +2138,63 @@ def _activity_emoji(activity_type: str) -> str:
     return "✨"
 
 
+
+@st.cache_data(ttl=10)
+def load_message_reactions() -> pd.DataFrame:
+    """
+    Load emoji reaction counts for message-board notes.
+    """
+    response = (
+        supabase.table("message_reactions")
+        .select("*")
+        .execute()
+    )
+
+    df = pd.DataFrame(response.data if response and response.data else [])
+
+    if df.empty:
+        return pd.DataFrame(
+            columns=["checkin_id", "emoji_key", "reaction_count"]
+        )
+
+    df["checkin_id"] = pd.to_numeric(
+        df["checkin_id"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+
+    df["emoji_key"] = df["emoji_key"].fillna("").astype(str)
+
+    df["reaction_count"] = pd.to_numeric(
+        df["reaction_count"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+
+    return df
+
+
+def get_reaction_count_map() -> dict[tuple[int, str], int]:
+    reactions = load_message_reactions()
+
+    if reactions.empty:
+        return {}
+
+    return {
+        (int(row["checkin_id"]), str(row["emoji_key"])): int(row["reaction_count"])
+        for _, row in reactions.iterrows()
+    }
+
+
+def increment_reaction(checkin_id: int, emoji_key: str):
+    supabase.rpc(
+        "increment_message_reaction",
+        {
+            "p_checkin_id": int(checkin_id),
+            "p_emoji_key": str(emoji_key),
+        },
+    ).execute()
+
+    load_message_reactions.clear()
+
 def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
     st.markdown("### 留言板")
     st.caption("大家打卡时随手写下的运动碎碎念。")
@@ -2155,6 +2219,13 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
         ascending=[False, False],
     ).head(max_cards).reset_index(drop=True)
 
+    try:
+        reaction_count_map = get_reaction_count_map()
+    except Exception as e:
+        reaction_count_map = {}
+        st.warning("留言互动数据暂时读取失败，但留言仍可正常显示。")
+        st.exception(e)
+
     st.markdown(
         """
         <style>
@@ -2169,7 +2240,7 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
             border: 1px solid rgba(120, 92, 65, 0.14);
             border-radius: 18px;
             padding: 1rem 1.05rem;
-            margin-bottom: 0.85rem;
+            margin-bottom: 0.45rem;
             background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,248,245,0.92));
             box-shadow: 0 8px 22px rgba(55, 48, 40, 0.055);
         }
@@ -2203,6 +2274,12 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
             color: #8a6a4f;
         }
 
+        .reaction-row-note {
+            color: #8b7a6a;
+            font-size: 0.82rem;
+            margin: -0.1rem 0 0.35rem 0;
+        }
+
         @media (max-width: 640px) {
             .message-card {
                 padding: 0.95rem 0.95rem;
@@ -2211,7 +2288,7 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
         </style>
 
         <div class="message-board-intro">
-        写一点运动后的感受、吐槽、鼓励，都会出现在这里。
+        留言会按最近记录自动排列。
         </div>
         """,
         unsafe_allow_html=True,
@@ -2220,9 +2297,18 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
     columns = st.columns(2)
 
     for idx, row in notes.iterrows():
+        checkin_id_raw = row.get("id", None)
+
+        try:
+            checkin_id = int(checkin_id_raw)
+        except Exception:
+            checkin_id = 0
+
         name = escape(str(row.get("name", "")))
         date = escape(str(row.get("activity_date", "")))
-        activity = escape(str(row.get("activity_type", "")).replace(PRIMARY_ACTIVITY_SUFFIX, ""))
+        activity = escape(
+            str(row.get("activity_type", "")).replace(PRIMARY_ACTIVITY_SUFFIX, "")
+        )
         minutes = escape(str(row.get("duration_min", "")))
         note = escape(str(row.get("note", "")))
         emoji = _activity_emoji(str(row.get("activity_type", "")))
@@ -2243,6 +2329,33 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
                 """,
                 unsafe_allow_html=True,
             )
+
+            st.markdown(
+                "<div class='reaction-row-note'>轻轻回应一下：</div>",
+                unsafe_allow_html=True,
+            )
+
+            reaction_cols = st.columns(len(MESSAGE_REACTIONS))
+
+            for reaction_idx, (emoji_key, emoji_symbol, emoji_label) in enumerate(MESSAGE_REACTIONS):
+                count = reaction_count_map.get((checkin_id, emoji_key), 0)
+
+                with reaction_cols[reaction_idx]:
+                    clicked = st.button(
+                        f"{emoji_symbol} {count}",
+                        help=emoji_label,
+                        key=f"message_reaction_{checkin_id}_{emoji_key}_{idx}",
+                        disabled=checkin_id <= 0,
+                        use_container_width=True,
+                    )
+
+                    if clicked:
+                        try:
+                            increment_reaction(checkin_id, emoji_key)
+                            st.rerun()
+                        except Exception as e:
+                            st.error("回应失败，请稍后再试。")
+                            st.exception(e)
 
     if len(notes) >= max_cards:
         st.caption(f"这里展示最近 {max_cards} 条留言。更早的备注仍然保存在后台记录里。")
