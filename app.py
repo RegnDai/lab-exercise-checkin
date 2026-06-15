@@ -3,6 +3,7 @@ import unicodedata
 
 import hmac
 import re
+from html import escape
 from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1399,7 +1400,7 @@ if not st.session_state.invite_ok:
 # Main tabs
 # -----------------------------
 
-tab_submit, tab_dashboard, tab_goal, tab_selection, tab_gallery, tab_admin = st.tabs(["打卡", "总览", "本月目标", "评选", "相册", "后台"])
+tab_submit, tab_dashboard, tab_goal, tab_selection, tab_gallery, tab_message, tab_admin = st.tabs(["打卡", "总览", "本月目标", "评选", "相册", "留言板", "后台"])
 
 
 # -----------------------------
@@ -2099,6 +2100,154 @@ def render_selection_board(df_all: pd.DataFrame, today):
             st.dataframe(view, use_container_width=True, hide_index=True)
 
 
+
+# -----------------------------
+# Message board helpers
+# -----------------------------
+
+def _activity_emoji(activity_type: str) -> str:
+    types = split_activity_types(activity_type)
+
+    if not types:
+        return "💬"
+
+    joined = "、".join(types)
+
+    if any(x in joined for x in ["跑步", "爬坡", "爬楼", "椭圆机"]):
+        return "🏃"
+    if any(x in joined for x in ["力量", "健身", "划船机"]):
+        return "💪"
+    if any(x in joined for x in ["散步", "走够一万步", "徒步", "登山"]):
+        return "🚶"
+    if any(x in joined for x in ["游泳"]):
+        return "🏊"
+    if any(x in joined for x in ["骑行"]):
+        return "🚴"
+    if any(x in joined for x in ["瑜伽", "普拉提", "舞蹈", "健身操"]):
+        return "🧘"
+    if any(x in joined for x in ["篮球", "足球", "排球", "羽毛球", "乒乓球", "网球"]):
+        return "🏀"
+
+    return "✨"
+
+
+def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
+    st.markdown("### 留言板")
+    st.caption("大家打卡时随手写下的运动碎碎念。")
+
+    if df_all.empty or "note" not in df_all.columns:
+        st.info("还没有留言。")
+        return
+
+    notes = df_all.copy()
+    notes["note"] = notes["note"].fillna("").astype(str).str.strip()
+    notes = notes[notes["note"] != ""].copy()
+
+    if notes.empty:
+        st.info("还没有人写备注。")
+        return
+
+    notes["activity_date_dt"] = pd.to_datetime(notes["activity_date"], errors="coerce")
+    notes["submitted_at_dt"] = pd.to_datetime(notes["submitted_at"], errors="coerce")
+
+    notes = notes.sort_values(
+        ["activity_date_dt", "submitted_at_dt"],
+        ascending=[False, False],
+    ).head(max_cards).reset_index(drop=True)
+
+    st.markdown(
+        """
+        <style>
+        .message-board-intro {
+            color: #7c6f64;
+            line-height: 1.8;
+            margin: 0.2rem 0 1.1rem 0;
+            font-size: 0.96rem;
+        }
+
+        .message-card {
+            border: 1px solid rgba(120, 92, 65, 0.14);
+            border-radius: 18px;
+            padding: 1rem 1.05rem;
+            margin-bottom: 0.85rem;
+            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,248,245,0.92));
+            box-shadow: 0 8px 22px rgba(55, 48, 40, 0.055);
+        }
+
+        .message-card:hover {
+            transform: translateY(-1px);
+            transition: transform 0.15s ease;
+        }
+
+        .message-meta {
+            color: #7c6f64;
+            font-size: 0.9rem;
+            margin-bottom: 0.55rem;
+            line-height: 1.55;
+        }
+
+        .message-name {
+            font-weight: 700;
+            color: #3f3027;
+        }
+
+        .message-note {
+            color: #2f2a25;
+            font-size: 1.02rem;
+            line-height: 1.75;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .message-activity {
+            color: #8a6a4f;
+        }
+
+        @media (max-width: 640px) {
+            .message-card {
+                padding: 0.95rem 0.95rem;
+            }
+        }
+        </style>
+
+        <div class="message-board-intro">
+        写一点运动后的感受、吐槽、鼓励，都会出现在这里。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    columns = st.columns(2)
+
+    for idx, row in notes.iterrows():
+        name = escape(str(row.get("name", "")))
+        date = escape(str(row.get("activity_date", "")))
+        activity = escape(str(row.get("activity_type", "")).replace(PRIMARY_ACTIVITY_SUFFIX, ""))
+        minutes = escape(str(row.get("duration_min", "")))
+        note = escape(str(row.get("note", "")))
+        emoji = _activity_emoji(str(row.get("activity_type", "")))
+
+        with columns[idx % 2]:
+            st.markdown(
+                f"""
+                <div class="message-card">
+                    <div class="message-meta">
+                        <span style="font-size:1.25rem;">{emoji}</span>
+                        <span class="message-name">{name}</span>
+                        ｜ {date}
+                        ｜ <span class="message-activity">{activity}</span>
+                        ｜ {minutes} 分钟
+                    </div>
+                    <div class="message-note">{note}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    if len(notes) >= max_cards:
+        st.caption(f"这里展示最近 {max_cards} 条留言。更早的备注仍然保存在后台记录里。")
+
+
 # -----------------------------
 # Gallery helpers
 # -----------------------------
@@ -2711,6 +2860,24 @@ with tab_gallery:
         st.stop()
 
     render_recent_image_gallery(df_all, limit=12)
+
+
+
+# -----------------------------
+# Message board tab
+# -----------------------------
+
+with tab_message:
+    st.subheader("留言板")
+
+    try:
+        df_all = load_checkins()
+    except Exception as e:
+        st.error("读取记录失败。")
+        st.exception(e)
+        st.stop()
+
+    render_message_board(df_all)
 
 
 # -----------------------------
