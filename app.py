@@ -43,6 +43,14 @@ MIN_SUBMIT_MINUTES = int(
     )
 )
 
+ACTIVITY_TYPE_SEPARATOR = "、"
+PRIMARY_ACTIVITY_SUFFIX = "（主要）"
+HALF_CREDIT_ACTIVITY_TYPES = list(
+    st.secrets.get("HALF_CREDIT_ACTIVITY_TYPES", ["散步", "走够一万步"])
+)
+HALF_CREDIT_GOAL_CREDIT = float(st.secrets.get("HALF_CREDIT_GOAL_CREDIT", 0.5))
+HALF_CREDIT_RECORD_CAP = int(st.secrets.get("HALF_CREDIT_RECORD_CAP", 8))
+
 ACTIVITY_TYPES = [
     "健身",
     "力量训练",
@@ -52,6 +60,7 @@ ACTIVITY_TYPES = [
     "骑行",
     "康复训练",
     "散步",
+    "走够一万步",
     "羽毛球",
     "乒乓球",
     "徒步",
@@ -231,6 +240,184 @@ def get_file_ext(filename: str) -> str:
     if suffix in [".jpg", ".jpeg", ".png", ".webp"]:
         return suffix
     return ".jpg"
+
+
+def _strip_primary_marker(value: str) -> str:
+    return str(value).replace(PRIMARY_ACTIVITY_SUFFIX, "").strip()
+
+
+def split_activity_types(value) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        raw_items = []
+        for item in value:
+            raw_items.extend(split_activity_types(item))
+    else:
+        text_value = str(value).strip()
+        if not text_value:
+            return []
+        raw_items = re.split(r"[、,，/／+＋;；|]+", text_value)
+
+    seen = set()
+    cleaned = []
+
+    for item in raw_items:
+        label = _strip_primary_marker(item)
+        if not label or label in seen:
+            continue
+        cleaned.append(label)
+        seen.add(label)
+
+    return cleaned
+
+
+def get_primary_activity_type(value) -> str:
+    if value is None:
+        return ""
+
+    raw_items = re.split(r"[、,，/／+＋;；|]+", str(value).strip())
+
+    for item in raw_items:
+        item = str(item).strip()
+        if item.endswith(PRIMARY_ACTIVITY_SUFFIX):
+            return _strip_primary_marker(item)
+
+    types = split_activity_types(value)
+    return types[0] if types else ""
+
+
+def join_activity_types(values) -> str:
+    return ACTIVITY_TYPE_SEPARATOR.join(split_activity_types(values))
+
+
+def join_activity_types_with_primary(values, primary_activity_type: str) -> str:
+    types = split_activity_types(values)
+    primary = _strip_primary_marker(primary_activity_type)
+
+    if not primary:
+        return join_activity_types(types)
+
+    if primary not in types:
+        types = [primary] + types
+
+    return ACTIVITY_TYPE_SEPARATOR.join(
+        f"{item}{PRIMARY_ACTIVITY_SUFFIX}" if item == primary else item
+        for item in types
+    )
+
+
+def is_half_credit_primary_activity(value) -> bool:
+    return get_primary_activity_type(value) in HALF_CREDIT_ACTIVITY_TYPES
+
+
+def format_goal_credit(value) -> str:
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.1f}".rstrip("0").rstrip(".")
+
+
+def add_goal_credit_columns(df: pd.DataFrame, target_minutes: int) -> pd.DataFrame:
+    out = df.copy()
+
+    if out.empty:
+        out["activity_type_list"] = []
+        out["primary_activity_type"] = []
+        out["is_duration_qualified"] = []
+        out["is_half_credit_primary"] = []
+        out["normal_goal_credit"] = []
+        out["half_credit_goal_record"] = []
+        return out
+
+    out["activity_type_list"] = out["activity_type"].apply(split_activity_types)
+    out["primary_activity_type"] = out["activity_type"].apply(get_primary_activity_type)
+    out["is_duration_qualified"] = out["duration_min"] >= target_minutes
+    out["is_half_credit_primary"] = out["activity_type"].apply(is_half_credit_primary_activity)
+
+    out["normal_goal_credit"] = (
+        out["is_duration_qualified"] & ~out["is_half_credit_primary"]
+    ).astype(float)
+
+    out["half_credit_goal_record"] = (
+        out["is_duration_qualified"] & out["is_half_credit_primary"]
+    ).astype(int)
+
+    return out
+
+
+def summarize_goal_credits(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    target_minutes: int,
+) -> pd.DataFrame:
+    columns = (
+        group_cols
+        + [
+            "总打卡次数",
+            "总运动分钟",
+            "有效运动次数",
+            "半次运动达标记录数",
+            "半次运动计入次数",
+        ]
+    )
+
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    temp = add_goal_credit_columns(df, target_minutes)
+
+    grouped = (
+        temp.groupby(group_cols, as_index=False)
+        .agg(
+            总打卡次数=("id", "count"),
+            总运动分钟=("duration_min", "sum"),
+            普通有效次数=("normal_goal_credit", "sum"),
+            半次运动达标记录数=("half_credit_goal_record", "sum"),
+        )
+    )
+
+    grouped["半次运动计入次数"] = (
+        grouped["半次运动达标记录数"].clip(upper=HALF_CREDIT_RECORD_CAP)
+        * HALF_CREDIT_GOAL_CREDIT
+    )
+
+    grouped["有效运动次数"] = grouped["普通有效次数"] + grouped["半次运动计入次数"]
+
+    grouped["总打卡次数"] = grouped["总打卡次数"].astype(int)
+    grouped["总运动分钟"] = grouped["总运动分钟"].astype(int)
+    grouped["半次运动达标记录数"] = grouped["半次运动达标记录数"].astype(int)
+
+    return grouped[
+        group_cols
+        + [
+            "总打卡次数",
+            "总运动分钟",
+            "有效运动次数",
+            "半次运动达标记录数",
+            "半次运动计入次数",
+        ]
+    ]
+
+
+def explode_activity_records(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    out["activity_type_list"] = out["activity_type"].apply(split_activity_types)
+    out = out[out["activity_type_list"].map(len) > 0].copy()
+
+    if out.empty:
+        return out
+
+    out["activity_type_count"] = out["activity_type_list"].map(len)
+    out = out.explode("activity_type_list")
+    out["activity_type"] = out["activity_type_list"]
+    out["duration_share"] = out["duration_min"] / out["activity_type_count"]
+
+    return out
 
 
 
@@ -433,22 +620,34 @@ def filter_by_date_range(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame
     ].copy()
 
 
+
 def make_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(
             columns=["姓名", "总运动分钟", "打卡天数", "运动种类数", "打卡次数", "平均每次分钟"]
         )
 
-    out = (
+    base = (
         df.groupby("name", as_index=False)
         .agg(
             总运动分钟=("duration_min", "sum"),
             打卡天数=("activity_date", "nunique"),
-            运动种类数=("activity_type", "nunique"),
             打卡次数=("id", "count"),
         )
     )
 
+    exploded = explode_activity_records(df)
+
+    if exploded.empty:
+        diversity = pd.DataFrame(columns=["name", "运动种类数"])
+    else:
+        diversity = (
+            exploded.groupby("name", as_index=False)
+            .agg(运动种类数=("activity_type", "nunique"))
+        )
+
+    out = base.merge(diversity, on="name", how="left").fillna({"运动种类数": 0})
+    out["运动种类数"] = out["运动种类数"].astype(int)
     out["平均每次分钟"] = (out["总运动分钟"] / out["打卡次数"]).round(1)
     out = out.rename(columns={"name": "姓名"})
 
@@ -458,24 +657,39 @@ def make_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+
+
 def make_activity_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(
             columns=["运动类型", "总运动分钟", "参与人数", "打卡次数"]
         )
 
+    exploded = explode_activity_records(df)
+
+    if exploded.empty:
+        return pd.DataFrame(
+            columns=["运动类型", "总运动分钟", "参与人数", "打卡次数"]
+        )
+
     out = (
-        df.groupby("activity_type", as_index=False)
+        exploded.groupby("activity_type", as_index=False)
         .agg(
-            总运动分钟=("duration_min", "sum"),
+            总运动分钟=("duration_share", "sum"),
             参与人数=("name", "nunique"),
-            打卡次数=("id", "count"),
+            打卡次数=("id", "nunique"),
         )
         .rename(columns={"activity_type": "运动类型"})
-        .sort_values(["总运动分钟", "参与人数", "打卡次数"], ascending=False)
     )
 
-    return out
+    out["总运动分钟"] = out["总运动分钟"].round(1)
+
+    return out.sort_values(
+        ["总运动分钟", "参与人数", "打卡次数"],
+        ascending=False,
+    )
+
+
 
 
 def make_diversity_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
@@ -484,10 +698,22 @@ def make_diversity_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
             columns=["姓名", "运动种类数", "运动类型", "总运动分钟", "打卡天数"]
         )
 
+    exploded = explode_activity_records(df)
+
+    if exploded.empty:
+        return pd.DataFrame(
+            columns=["姓名", "运动种类数", "运动类型", "总运动分钟", "打卡天数"]
+        )
+
     diversity = (
+        exploded.groupby("name")
+        .agg(运动种类数=("activity_type", "nunique"))
+        .reset_index()
+    )
+
+    totals = (
         df.groupby("name")
         .agg(
-            运动种类数=("activity_type", "nunique"),
             总运动分钟=("duration_min", "sum"),
             打卡天数=("activity_date", "nunique"),
         )
@@ -495,18 +721,23 @@ def make_diversity_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     activity_list = (
-        df.groupby("name")["activity_type"]
+        exploded.groupby("name")["activity_type"]
         .apply(lambda x: "、".join(sorted(set(x))))
         .reset_index(name="运动类型")
     )
 
-    out = diversity.merge(activity_list, on="name", how="left")
+    out = (
+        diversity.merge(totals, on="name", how="left")
+        .merge(activity_list, on="name", how="left")
+    )
+
     out = out.rename(columns={"name": "姓名"})
 
     return out.sort_values(
         ["运动种类数", "总运动分钟", "打卡天数"],
         ascending=False,
     )
+
 
 
 def make_daily_presence_table(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
@@ -887,13 +1118,8 @@ def get_monthly_goal_settings() -> tuple[int, int]:
     return target_checkins, target_minutes
 
 
-def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFrame:
-    """
-    Current-month goal status by person.
 
-    A qualifying session means duration_min >= target_minutes.
-    One long workout still counts as one qualifying session, not multiple.
-    """
+def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFrame:
     active_members = get_active_members()
     target_checkins, target_minutes = get_monthly_goal_settings()
 
@@ -906,6 +1132,8 @@ def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFram
                 "有效运动次数",
                 "总打卡次数",
                 "总运动分钟",
+                "半次运动达标记录数",
+                "半次运动计入次数",
                 "达标进度",
                 "还差有效运动次数",
                 "本月状态",
@@ -915,47 +1143,49 @@ def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFram
 
     if df_month_to_date.empty:
         out = base.copy()
-        out["有效运动次数"] = 0
+        out["有效运动次数"] = 0.0
         out["总打卡次数"] = 0
         out["总运动分钟"] = 0
+        out["半次运动达标记录数"] = 0
+        out["半次运动计入次数"] = 0.0
     else:
         df = df_month_to_date[df_month_to_date["name"].isin(active_members)].copy()
-        df["is_qualified"] = df["duration_min"] >= target_minutes
-
-        summary = (
-            df.groupby("name", as_index=False)
-            .agg(
-                有效运动次数=("is_qualified", "sum"),
-                总打卡次数=("id", "count"),
-                总运动分钟=("duration_min", "sum"),
-            )
-            .rename(columns={"name": "姓名"})
+        summary = summarize_goal_credits(df, ["name"], target_minutes).rename(
+            columns={"name": "姓名"}
         )
-
         out = base.merge(summary, on="姓名", how="left").fillna(
             {
-                "有效运动次数": 0,
+                "有效运动次数": 0.0,
                 "总打卡次数": 0,
                 "总运动分钟": 0,
+                "半次运动达标记录数": 0,
+                "半次运动计入次数": 0.0,
             }
         )
 
-    out["有效运动次数"] = out["有效运动次数"].astype(int)
+    out["有效运动次数"] = out["有效运动次数"].astype(float)
     out["总打卡次数"] = out["总打卡次数"].astype(int)
     out["总运动分钟"] = out["总运动分钟"].astype(int)
+    out["半次运动达标记录数"] = out["半次运动达标记录数"].astype(int)
+    out["半次运动计入次数"] = out["半次运动计入次数"].astype(float)
 
     out["还差有效运动次数"] = (
         target_checkins - out["有效运动次数"]
     ).clip(lower=0)
 
-    out["达标进度"] = out["有效运动次数"].astype(str) + f"/{target_checkins}"
+    out["达标进度"] = (
+        out["有效运动次数"].apply(format_goal_credit)
+        + f"/{target_checkins}"
+    )
 
     out["本月状态"] = out["还差有效运动次数"].apply(
-        lambda x: "✅ 已达标" if x == 0 else "未达标"
+        lambda x: "✅ 已达标" if float(x) <= 0 else "未达标"
     )
 
     out["达标提示"] = out["还差有效运动次数"].apply(
-        lambda x: "本月已达标" if x == 0 else f"还差 {int(x)} 次有效运动"
+        lambda x: "本月已达标"
+        if float(x) <= 0
+        else f"还差 {format_goal_credit(x)} 次有效运动"
     )
 
     return out.sort_values(
@@ -964,12 +1194,9 @@ def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFram
     )
 
 
-def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
-    """
-    Person-month goal history.
 
-    Missing person-month records are treated as zero qualifying sessions.
-    """
+
+def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
     active_members = get_active_members()
     target_checkins, target_minutes = get_monthly_goal_settings()
 
@@ -979,6 +1206,8 @@ def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
         "有效运动次数",
         "总打卡次数",
         "总运动分钟",
+        "半次运动达标记录数",
+        "半次运动计入次数",
         "是否达标",
         "还差有效运动次数",
     ]
@@ -1000,35 +1229,29 @@ def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
     ).to_frame(index=False)
 
     if df_all.empty:
-        summary = pd.DataFrame(
-            columns=["姓名", "月份", "有效运动次数", "总打卡次数", "总运动分钟"]
-        )
+        summary = pd.DataFrame(columns=columns[:-2])
     else:
         df = df_all[df_all["name"].isin(active_members)].copy()
         df["月份"] = pd.to_datetime(df["activity_date"]).dt.to_period("M")
-        df["is_qualified"] = df["duration_min"] >= target_minutes
-
-        summary = (
-            df.groupby(["name", "月份"], as_index=False)
-            .agg(
-                有效运动次数=("is_qualified", "sum"),
-                总打卡次数=("id", "count"),
-                总运动分钟=("duration_min", "sum"),
-            )
-            .rename(columns={"name": "姓名"})
+        summary = summarize_goal_credits(df, ["name", "月份"], target_minutes).rename(
+            columns={"name": "姓名"}
         )
 
     out = skeleton.merge(summary, on=["姓名", "月份"], how="left").fillna(
         {
-            "有效运动次数": 0,
+            "有效运动次数": 0.0,
             "总打卡次数": 0,
             "总运动分钟": 0,
+            "半次运动达标记录数": 0,
+            "半次运动计入次数": 0.0,
         }
     )
 
-    out["有效运动次数"] = out["有效运动次数"].astype(int)
+    out["有效运动次数"] = out["有效运动次数"].astype(float)
     out["总打卡次数"] = out["总打卡次数"].astype(int)
     out["总运动分钟"] = out["总运动分钟"].astype(int)
+    out["半次运动达标记录数"] = out["半次运动达标记录数"].astype(int)
+    out["半次运动计入次数"] = out["半次运动计入次数"].astype(float)
 
     out["是否达标"] = out["有效运动次数"] >= target_checkins
     out["还差有效运动次数"] = (
@@ -1037,6 +1260,7 @@ def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
     out["月份"] = out["月份"].astype(str)
 
     return out
+
 
 
 def _longest_true_streak(values: list[bool]) -> int:
@@ -1065,13 +1289,8 @@ def _ending_true_streak(values: list[bool]) -> int:
     return streak
 
 
-def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
-    """
-    Cumulative and streak goal summary by person.
 
-    Consecutive goal streak is calculated using completed months only.
-    The current unfinished month does not break a streak.
-    """
+def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
     active_members = get_active_members()
     target_checkins, _ = get_monthly_goal_settings()
     current_month = str(pd.Period(today, freq="M"))
@@ -1103,21 +1322,17 @@ def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
         current_row = person[person["月份"] == current_month]
 
         if current_row.empty:
-            current_valid = 0
-            current_remaining = target_checkins
+            current_valid = 0.0
+            current_remaining = float(target_checkins)
             current_achieved = False
         else:
-            current_valid = int(current_row.iloc[0]["有效运动次数"])
-            current_remaining = int(current_row.iloc[0]["还差有效运动次数"])
+            current_valid = float(current_row.iloc[0]["有效运动次数"])
+            current_remaining = float(current_row.iloc[0]["还差有效运动次数"])
             current_achieved = bool(current_row.iloc[0]["是否达标"])
 
         total_months = len(person)
         achieved_months = int(person["是否达标"].sum())
-        achievement_rate = (
-            achieved_months / total_months * 100
-            if total_months > 0
-            else 0
-        )
+        achievement_rate = achieved_months / total_months * 100 if total_months > 0 else 0
 
         rows.append(
             {
@@ -1127,24 +1342,31 @@ def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
                 "累计达标率": f"{achievement_rate:.1f}%",
                 "历史连续达标月数": _ending_true_streak(completed_status),
                 "最长连续达标月数": _longest_true_streak(completed_status),
-                "本月有效运动次数": current_valid,
-                "本月还差有效运动次数": current_remaining,
+                "本月有效运动次数": format_goal_credit(current_valid),
+                "本月还差有效运动次数": format_goal_credit(current_remaining),
                 "本月状态": "✅ 已达标" if current_achieved else "未达标",
-                "本月提示": "本月已达标" if current_remaining == 0 else f"还差 {current_remaining} 次有效运动",
+                "本月提示": "本月已达标"
+                if current_remaining <= 0
+                else f"还差 {format_goal_credit(current_remaining)} 次有效运动",
+                "_sort_current_valid": current_valid,
             }
         )
 
     out = pd.DataFrame(rows)
 
-    return out.sort_values(
-        [
-            "累计达标月数",
-            "历史连续达标月数",
-            "最长连续达标月数",
-            "本月有效运动次数",
-        ],
-        ascending=False,
+    return (
+        out.sort_values(
+            [
+                "累计达标月数",
+                "历史连续达标月数",
+                "最长连续达标月数",
+                "_sort_current_valid",
+            ],
+            ascending=False,
+        )
+        .drop(columns=["_sort_current_valid"])
     )
+
 
 # END monthly goal helpers
 
@@ -1189,50 +1411,95 @@ with tab_submit:
 
     members = list(st.secrets.get("MEMBERS", []))
 
-    with st.form("checkin_form", clear_on_submit=True):
-        if members:
-            name = st.selectbox("姓名", members)
-        else:
-            name = st.text_input("姓名")
+    if members:
+        name = st.selectbox("姓名", members, key="submit_name")
+    else:
+        name = st.text_input("姓名", key="submit_name")
 
-        activity_date = st.date_input("运动日期", value=get_now_local().date())
+    activity_date = st.date_input(
+        "运动日期",
+        value=get_now_local().date(),
+        key="submit_activity_date",
+    )
 
-        activity_type = st.selectbox(
-            "运动类型",
-            ACTIVITY_TYPES,
+    activity_types = st.multiselect(
+        "运动类型（可多选）",
+        ACTIVITY_TYPES,
+        default=[],
+        help="一次运动包含多种内容时可以多选，例如：爬坡、力量训练。",
+        key="submit_activity_types",
+    )
+
+    if activity_types:
+        primary_activity_type = st.selectbox(
+            "主要运动",
+            activity_types,
+            help="主要运动只能从已选择的运动类型中选择，且必须不少于最低分钟数。",
+            key="submit_primary_activity_type",
         )
+    else:
+        primary_activity_type = ""
+        st.info("请选择至少一种运动类型。")
 
-        duration_min = st.number_input(
-            "运动时长（分钟）",
-            min_value=MIN_SUBMIT_MINUTES,
-            max_value=600,
-            value=MIN_SUBMIT_MINUTES,
-            step=5,
-            help=f"每次提交至少 {MIN_SUBMIT_MINUTES} 分钟。",
-        )
+    primary_duration_min = st.number_input(
+        "主要运动时长（分钟）",
+        min_value=MIN_SUBMIT_MINUTES,
+        max_value=600,
+        value=MIN_SUBMIT_MINUTES,
+        step=5,
+        help=f"主要运动必须至少 {MIN_SUBMIT_MINUTES} 分钟。",
+        key="submit_primary_duration_min",
+    )
 
-        uploaded_file = st.file_uploader(
-            f"上传截图或照片（原图不超过 {MAX_SOURCE_UPLOAD_MB} MB，系统会自动压缩）",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=False,
-        )
+    duration_min = st.number_input(
+        "总运动时长（分钟）",
+        min_value=MIN_SUBMIT_MINUTES,
+        max_value=600,
+        value=MIN_SUBMIT_MINUTES,
+        step=5,
+        help="填写这次运动的总时长，例如 30 分钟爬坡 + 10 分钟力量训练，就填 40。",
+        key="submit_duration_min",
+    )
 
-        note = st.text_area(
-            "今天有什么想说的？",
-            placeholder="记录一点今天的状态、心情、运动感受，或者随便写一句话。",
-            )
+    uploaded_file = st.file_uploader(
+        f"上传截图或照片（原图不超过 {MAX_SOURCE_UPLOAD_MB} MB，系统会自动压缩）",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=False,
+        key="submit_uploaded_file",
+    )
 
-        submitted = st.form_submit_button("提交打卡")
+    note = st.text_area(
+        "今天有什么想说的？",
+        placeholder="记录一点今天的状态、心情、运动感受，或者随便写一句话。",
+        key="submit_note",
+    )
+
+    submitted = st.button(
+        "提交打卡",
+        disabled=not activity_types,
+        type="primary",
+        key="submit_checkin_button",
+    )
 
     if submitted:
         name = name.strip()
+        activity_type = join_activity_types_with_primary(
+            activity_types,
+            primary_activity_type,
+        )
 
         if not name:
             st.error("姓名不能为空。")
+        elif not activity_types:
+            st.error("请选择至少一种运动类型。")
+        elif primary_activity_type not in activity_types:
+            st.error("主要运动必须包含在已选择的运动类型里。")
         elif uploaded_file is None:
             st.error("请上传一张截图或照片。")
-        elif int(duration_min) < MIN_SUBMIT_MINUTES:
-            st.error(f"每次运动记录至少需要 {MIN_SUBMIT_MINUTES} 分钟。")
+        elif int(primary_duration_min) < MIN_SUBMIT_MINUTES:
+            st.error(f"主要运动至少需要 {MIN_SUBMIT_MINUTES} 分钟。")
+        elif int(duration_min) < int(primary_duration_min):
+            st.error("总运动时长不能小于主要运动时长。")
         else:
             try:
                 file_info = upload_image(uploaded_file, name, activity_date)
@@ -1330,6 +1597,7 @@ def _selection_month_label(month_value: str) -> str:
         return str(month_value)
 
 
+
 def make_selection_tables(
     df_all: pd.DataFrame,
     today,
@@ -1374,20 +1642,19 @@ def make_selection_tables(
                 "月运动次数",
                 "月有效运动次数",
                 "月运动时长",
+                "半次运动达标记录数",
+                "半次运动计入次数",
             ]
         )
     else:
         temp = df_period.copy()
         temp["month"] = temp["selection_month"]
-        temp["is_effective"] = temp["duration_min"] >= target_minutes
-
-        monthly = (
-            temp.groupby(["name", "month"], as_index=False)
-            .agg(
-                月运动次数=("id", "count"),
-                月有效运动次数=("is_effective", "sum"),
-                月运动时长=("duration_min", "sum"),
-            )
+        monthly = summarize_goal_credits(temp, ["name", "month"], target_minutes).rename(
+            columns={
+                "总打卡次数": "月运动次数",
+                "总运动分钟": "月运动时长",
+                "有效运动次数": "月有效运动次数",
+            }
         )
 
     monthly_grid = (
@@ -1395,33 +1662,36 @@ def make_selection_tables(
         .fillna(
             {
                 "月运动次数": 0,
-                "月有效运动次数": 0,
+                "月有效运动次数": 0.0,
                 "月运动时长": 0,
+                "半次运动达标记录数": 0,
+                "半次运动计入次数": 0.0,
             }
         )
     )
 
-    for col in ["月运动次数", "月有效运动次数", "月运动时长"]:
-        monthly_grid[col] = monthly_grid[col].astype(int)
-
+    monthly_grid["月运动次数"] = monthly_grid["月运动次数"].astype(int)
+    monthly_grid["月运动时长"] = monthly_grid["月运动时长"].astype(int)
+    monthly_grid["月有效运动次数"] = monthly_grid["月有效运动次数"].astype(float)
+    monthly_grid["半次运动达标记录数"] = monthly_grid["半次运动达标记录数"].astype(int)
+    monthly_grid["半次运动计入次数"] = monthly_grid["半次运动计入次数"].astype(float)
     monthly_grid["月度达标"] = monthly_grid["月有效运动次数"] >= target_checkins
 
-    if monthly_grid.empty:
-        person_month = pd.DataFrame(
+    person_month = (
+        monthly_grid.groupby("name", as_index=False)
+        .agg(
+            达标月份数=("月度达标", "sum"),
+            统计月份数=("month", "nunique"),
+        )
+        if not monthly_grid.empty
+        else pd.DataFrame(
             {
                 "name": active_members,
                 "达标月份数": [0] * len(active_members),
                 "统计月份数": [len(selected_months)] * len(active_members),
             }
         )
-    else:
-        person_month = (
-            monthly_grid.groupby("name", as_index=False)
-            .agg(
-                达标月份数=("月度达标", "sum"),
-                统计月份数=("month", "nunique"),
-            )
-        )
+    )
 
     if df_period.empty:
         totals = pd.DataFrame(
@@ -1429,20 +1699,17 @@ def make_selection_tables(
                 "name": active_members,
                 "总运动时长": [0] * len(active_members),
                 "总运动次数": [0] * len(active_members),
-                "有效运动次数": [0] * len(active_members),
+                "有效运动次数": [0.0] * len(active_members),
+                "半次运动达标记录数": [0] * len(active_members),
+                "半次运动计入次数": [0.0] * len(active_members),
             }
         )
     else:
-        temp = df_period.copy()
-        temp["is_effective"] = temp["duration_min"] >= target_minutes
-
-        totals = (
-            temp.groupby("name", as_index=False)
-            .agg(
-                总运动时长=("duration_min", "sum"),
-                总运动次数=("id", "count"),
-                有效运动次数=("is_effective", "sum"),
-            )
+        totals = summarize_goal_credits(df_period, ["name"], target_minutes).rename(
+            columns={
+                "总打卡次数": "总运动次数",
+                "总运动分钟": "总运动时长",
+            }
         )
 
     members_df = pd.DataFrame({"name": active_members})
@@ -1454,15 +1721,22 @@ def make_selection_tables(
             {
                 "总运动时长": 0,
                 "总运动次数": 0,
-                "有效运动次数": 0,
+                "有效运动次数": 0.0,
+                "半次运动达标记录数": 0,
+                "半次运动计入次数": 0.0,
                 "达标月份数": 0,
                 "统计月份数": len(selected_months),
             }
         )
     )
 
-    for col in ["总运动时长", "总运动次数", "有效运动次数", "达标月份数", "统计月份数"]:
-        summary[col] = summary[col].astype(int)
+    summary["总运动时长"] = summary["总运动时长"].astype(int)
+    summary["总运动次数"] = summary["总运动次数"].astype(int)
+    summary["有效运动次数"] = summary["有效运动次数"].astype(float)
+    summary["半次运动达标记录数"] = summary["半次运动达标记录数"].astype(int)
+    summary["半次运动计入次数"] = summary["半次运动计入次数"].astype(float)
+    summary["达标月份数"] = summary["达标月份数"].astype(int)
+    summary["统计月份数"] = summary["统计月份数"].astype(int)
 
     summary["周期目标次数"] = summary["统计月份数"] * target_checkins
 
@@ -1510,6 +1784,8 @@ def make_selection_tables(
             "总运动时长",
             "总运动次数",
             "有效运动次数",
+            "半次运动达标记录数",
+            "半次运动计入次数",
             "周期目标次数",
             "有效次数完成率",
             "达标月份数",
@@ -1545,16 +1821,7 @@ def make_selection_tables(
         temp["指标值"] = temp[value_col]
         temp["名次"] = temp[rank_col]
 
-        selection_frames.append(
-            temp[
-                [
-                    "姓名",
-                    "评选指标",
-                    "指标值",
-                    "名次",
-                ]
-            ]
-        )
+        selection_frames.append(temp[["姓名", "评选指标", "指标值", "名次"]])
 
     if selection_frames:
         selected_candidates = pd.concat(selection_frames, ignore_index=True)
@@ -1587,6 +1854,8 @@ def make_selection_tables(
 
     if not monthly_detail.empty:
         monthly_detail["月份"] = monthly_detail["月份"].map(_selection_month_label)
+        monthly_detail["月有效运动次数"] = monthly_detail["月有效运动次数"].apply(format_goal_credit)
+        monthly_detail["半次运动计入次数"] = monthly_detail["半次运动计入次数"].apply(format_goal_credit)
         monthly_detail["月度达标"] = monthly_detail["月度达标"].map(
             {True: "是", False: "否"}
         )
@@ -1603,6 +1872,7 @@ def make_selection_tables(
         "target_minutes": target_minutes,
         "selected_months": selected_months,
     }
+
 
 
 def render_selection_board(df_all: pd.DataFrame, today):
@@ -1732,6 +2002,8 @@ def render_selection_board(df_all: pd.DataFrame, today):
             st.dataframe(recommended_view, use_container_width=True, hide_index=True)
 
         summary_view = summary.copy()
+        summary_view["有效运动次数"] = summary_view["有效运动次数"].apply(format_goal_credit)
+        summary_view["半次运动计入次数"] = summary_view["半次运动计入次数"].apply(format_goal_credit)
         summary_view["有效次数完成率"] = summary_view["有效次数完成率"].map(lambda x: f"{float(x):.1f}%")
         summary_view["总达标率"] = summary_view["总达标率"].map(lambda x: f"{float(x):.1f}%")
         summary_view["满勤候选"] = summary_view["满勤候选"].map({True: "是", False: "否"})
@@ -2038,7 +2310,7 @@ with tab_dashboard:
 
         st.caption(
             f"规则：本月完成 {target_checkins} 次有效运动；"
-            f"每次不少于 {target_minutes} 分钟。"
+            f"每次主要运动不少于 {target_minutes} 分钟。"
         )
 
         monthly_goal_table = make_current_month_goal_table(df_month)
@@ -2070,7 +2342,12 @@ with tab_dashboard:
             )
             st.metric("达标率", f"{achievement_rate:.1f}%")
 
-        monthly_goal_view = monthly_goal_table.rename(
+        monthly_goal_display = monthly_goal_table.copy()
+        monthly_goal_display["有效运动次数"] = monthly_goal_display["有效运动次数"].apply(format_goal_credit)
+        monthly_goal_display["半次运动计入次数"] = monthly_goal_display["半次运动计入次数"].apply(format_goal_credit)
+        monthly_goal_display["还差有效运动次数"] = monthly_goal_display["还差有效运动次数"].apply(format_goal_credit)
+
+        monthly_goal_view = monthly_goal_display.rename(
             columns={
                 "有效运动次数": "有效次数",
                 "总打卡次数": "打卡",
@@ -2124,8 +2401,11 @@ with tab_dashboard:
                 {True: "✅ 已达标", False: "未达标"}
             )
             history_view["达标提示"] = history_view["还差有效运动次数"].apply(
-                lambda x: "已达标" if int(x) == 0 else f"还差 {int(x)} 次"
+                lambda x: "已达标" if float(x) <= 0 else f"还差 {format_goal_credit(x)} 次"
             )
+            history_view["有效运动次数"] = history_view["有效运动次数"].apply(format_goal_credit)
+            history_view["半次运动计入次数"] = history_view["半次运动计入次数"].apply(format_goal_credit)
+            history_view["还差有效运动次数"] = history_view["还差有效运动次数"].apply(format_goal_credit)
             history_view = history_view.rename(
                 columns={
                     "有效运动次数": "有效次数",
@@ -2324,7 +2604,7 @@ with tab_goal:
 
     st.markdown(
         f"""
-        每人 **{target_checkins_per_person} 次**，每次 **{target_minutes_per_checkin} 分钟**。  
+        每人 **{target_checkins_per_person} 次**，每次主要运动 **{target_minutes_per_checkin} 分钟**。  
         每条记录最多计入 **{energy_credit_cap_min} 分钟**；多出来的时间仍会完整保留在总览里。
         """
     )
