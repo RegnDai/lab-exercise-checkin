@@ -16,11 +16,239 @@ from PIL import Image, ImageOps
 from supabase import create_client
 
 
+
+
+
+def render_blue_table(
+    dataframe: pd.DataFrame,
+    use_container_width: bool = True,
+    hide_index: bool = True,
+    height: int | None = None,
+    **kwargs,
+):
+    if dataframe is None:
+        st.info("暂无数据。")
+        return
+
+    if dataframe.empty:
+        st.info("暂无数据。")
+        return
+
+    df = dataframe.copy()
+
+    # Pandas pivot tables may carry hidden axis names such as columns.name = "name".
+    # st.dataframe hides this, but DataFrame.to_html renders it as an extra header row.
+    df.columns.name = None
+    df.index.name = None
+
+    html = df.to_html(
+        index=not hide_index,
+        escape=True,
+        border=0,
+        classes="blue-data-table",
+    )
+
+    max_height_style = f"max-height: {int(height)}px;" if height else ""
+
+    st.markdown(
+        f"""
+        <div class="blue-table-wrap" style="{max_height_style}">
+            {html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_blue_stat_card(label: str, value, caption: str | None = None):
+    caption_html = ""
+
+    if caption:
+        caption_html = f"<div class='blue-stat-caption'>{escape(str(caption))}</div>"
+
+    st.markdown(
+        f"""
+        <div class="blue-stat-card">
+            <div class="blue-stat-label">{escape(str(label))}</div>
+            <div class="blue-stat-value">{escape(str(value))}</div>
+            {caption_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def inject_blue_metric_css():
+    st.markdown(
+        """
+        <style>
+        /* Native Streamlit metric cards */
+        div[data-testid="stMetric"] {
+            background: linear-gradient(135deg, #FFFFFF 0%, #EAF2FF 100%);
+            border: 1px solid #C8D8F0;
+            border-radius: 1.15rem;
+            padding: 1rem 1.1rem;
+            box-shadow: 0 10px 24px rgba(37, 99, 235, 0.08);
+        }
+
+        div[data-testid="stMetric"] label {
+            color: #475569 !important;
+            font-weight: 650 !important;
+        }
+
+        div[data-testid="stMetricValue"] {
+            color: #172033 !important;
+            font-weight: 800 !important;
+        }
+
+        div[data-testid="stMetricDelta"] {
+            color: #2563EB !important;
+        }
+
+        /* Custom metric/stat cards, if app.py uses handmade HTML cards */
+        .metric-card,
+        .kpi-card,
+        .stat-card,
+        .summary-card,
+        .dashboard-card {
+            background: linear-gradient(135deg, #FFFFFF 0%, #EAF2FF 100%) !important;
+            border: 1px solid #C8D8F0 !important;
+            border-radius: 1.15rem !important;
+            box-shadow: 0 10px 24px rgba(37, 99, 235, 0.08) !important;
+            color: #172033 !important;
+        }
+
+        .metric-card *,
+        .kpi-card *,
+        .stat-card *,
+        .summary-card *,
+        .dashboard-card * {
+            color: inherit;
+        }
+
+        .metric-label,
+        .kpi-label,
+        .stat-label,
+        .summary-label {
+            color: #475569 !important;
+        }
+
+        .metric-value,
+        .kpi-value,
+        .stat-value,
+        .summary-value {
+            color: #172033 !important;
+            font-weight: 800 !important;
+        }
+
+        .metric-accent,
+        .kpi-accent,
+        .stat-accent {
+            color: #2563EB !important;
+        }
+
+        .blue-stat-card {
+            background:
+                radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 36%),
+                linear-gradient(135deg, #FFFFFF 0%, #EAF2FF 100%);
+            border: 1px solid #C8D8F0;
+            border-radius: 1.15rem;
+            padding: 1rem 1.1rem;
+            min-height: 112px;
+            box-shadow: 0 10px 24px rgba(37, 99, 235, 0.08);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .blue-stat-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 14px 30px rgba(37, 99, 235, 0.11);
+            transition: all 0.16s ease;
+        }
+
+        .blue-stat-label {
+            color: #475569;
+            font-size: 0.92rem;
+            font-weight: 650;
+            letter-spacing: 0.01em;
+            margin-bottom: 0.45rem;
+        }
+
+        .blue-stat-value {
+            color: #172033;
+            font-size: 2.05rem;
+            line-height: 1.08;
+            font-weight: 850;
+        }
+
+        .blue-stat-caption {
+            color: #64748B;
+            font-size: 0.82rem;
+            margin-top: 0.4rem;
+        }
+
+        .blue-table-wrap {
+            width: 100%;
+            overflow: auto;
+            border: 1px solid #C8D8F0;
+            border-radius: 1.15rem;
+            background: #FFFFFF;
+            box-shadow: 0 10px 24px rgba(37, 99, 235, 0.07);
+            margin: 0.55rem 0 1rem 0;
+        }
+
+        .blue-table-wrap table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 0.92rem;
+            color: #172033;
+        }
+
+        .blue-table-wrap thead th {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background: linear-gradient(180deg, #EAF2FF 0%, #DCEBFF 100%);
+            color: #1D4ED8;
+            font-weight: 750;
+            text-align: left;
+            padding: 0.72rem 0.8rem;
+            border-bottom: 1px solid #C8D8F0;
+            white-space: nowrap;
+        }
+
+        .blue-table-wrap tbody td {
+            padding: 0.68rem 0.8rem;
+            border-bottom: 1px solid #E5EEF8;
+            vertical-align: top;
+        }
+
+        .blue-table-wrap tbody tr:nth-child(even) td {
+            background: #F8FBFF;
+        }
+
+        .blue-table-wrap tbody tr:hover td {
+            background: #EFF6FF;
+        }
+
+        .blue-table-wrap tbody tr:last-child td {
+            border-bottom: 0;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 st.set_page_config(
     page_title="实验室运动打卡",
     page_icon="🏃",
     layout="wide",
 )
+
+inject_blue_metric_css()
 
 
 # -----------------------------
@@ -129,11 +357,11 @@ def inject_app_style():
         }
 
         div[data-testid="stMetric"] {
-            background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(250,248,245,0.92));
-            border: 1px solid rgba(120, 92, 65, 0.12);
+            background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(234,242,255,0.92));
+            border: 1px solid rgba(37, 99, 235, 0.12);
             border-radius: 18px;
             padding: 0.85rem 1rem;
-            box-shadow: 0 8px 22px rgba(55, 48, 40, 0.055);
+            box-shadow: 0 8px 22px rgba(37, 99, 235, 0.08);
         }
 
         div[data-testid="stMetricLabel"] p {
@@ -153,12 +381,12 @@ def inject_app_style():
         [data-testid="stFormSubmitButton"] button {
             border-radius: 999px;
             padding: 0.55rem 1.2rem;
-            border: 1px solid rgba(120, 92, 65, 0.18);
+            border: 1px solid rgba(37, 99, 235, 0.18);
         }
 
         div[data-testid="stExpander"] {
             border-radius: 16px;
-            border: 1px solid rgba(120, 92, 65, 0.12);
+            border: 1px solid rgba(37, 99, 235, 0.12);
             overflow: hidden;
         }
 
@@ -178,7 +406,7 @@ def inject_app_style():
         }
 
         .section-kicker {
-            color: #8a6a4f;
+            color: #2563EB;
             font-size: 0.9rem;
             margin-bottom: -0.4rem;
         }
@@ -200,6 +428,7 @@ def inject_app_style():
     )
 
 inject_app_style()
+inject_blue_metric_css()
 
 # END app polish styles
 
@@ -985,14 +1214,14 @@ def render_energy_bowl(progress: float):
             margin: 0 auto;
             width: 330px;
             height: 205px;
-            border: 9px solid #7a5639;
+            border: 9px solid #1D4ED8;
             border-top: 0;
             border-radius: 0 0 170px 170px / 0 0 125px 125px;
-            background: linear-gradient(180deg, #fffaf4 0%, #f7eee4 100%);
+            background: linear-gradient(180deg, #F4F8FF 0%, #EAF2FF 100%);
             overflow: hidden;
             box-shadow:
                 inset 0 0 0 2px rgba(255,255,255,0.72),
-                0 14px 32px rgba(54, 43, 32, 0.12);
+                0 14px 32px rgba(37, 99, 235, 0.12);
         }}
 
         .energy-bowl::before {{
@@ -1015,7 +1244,7 @@ def render_energy_bowl(progress: float):
             height: {percent:.1f}%;
             background:
                 radial-gradient(circle at 30% 18%, rgba(255,255,255,0.32), transparent 22%),
-                linear-gradient(180deg, #f6bd60 0%, #f28444 46%, #d95d39 100%);
+                linear-gradient(180deg, #93C5FD 0%, #3B82F6 46%, #1D4ED8 100%);
             border-radius: 0 0 150px 150px / 0 0 110px 110px;
             transition: height 0.6s ease;
         }}
@@ -1027,7 +1256,7 @@ def render_energy_bowl(progress: float):
             left: 0;
             width: 100%;
             height: 25px;
-            background: rgba(255, 230, 185, 0.55);
+            background: rgba(191, 219, 254, 0.65);
             border-radius: 50%;
         }}
 
@@ -1057,7 +1286,7 @@ def render_energy_bowl(progress: float):
         .energy-bowl-percent {{
             font-size: 2.35rem;
             font-weight: 800;
-            color: #3f3027;
+            color: #172033;
             line-height: 1.1;
             text-shadow: 0 1px 8px rgba(255,255,255,0.62);
         }}
@@ -1065,7 +1294,7 @@ def render_energy_bowl(progress: float):
         .energy-bowl-text {{
             margin-top: 0.3rem;
             font-size: 0.98rem;
-            color: #6a4a3c;
+            color: #334155;
             text-shadow: 0 1px 8px rgba(255,255,255,0.62);
         }}
 
@@ -1417,6 +1646,20 @@ tab_submit, tab_dashboard, tab_goal, tab_selection, tab_gallery, tab_message, ta
 with tab_submit:
     st.subheader("今天运动了么？")
 
+    if hasattr(st, "popover"):
+        with st.popover("查看打卡规则"):
+            st.markdown(
+                f"""
+                - 可以选择多个运动类型。
+                - 需要指定一个主要运动。
+                - 主要运动不少于 **{MIN_SUBMIT_MINUTES} 分钟** 才能提交。
+                - 散步、走够一万步默认按半次有效打卡计入目标。
+                - 上传图片会自动压缩，不需要自己处理。
+                """
+            )
+    else:
+        st.caption(f"主要运动不少于 {MIN_SUBMIT_MINUTES} 分钟才可提交。")
+
     members = list(st.secrets.get("MEMBERS", []))
 
     if members:
@@ -1430,21 +1673,43 @@ with tab_submit:
         key="submit_activity_date",
     )
 
-    activity_types = st.multiselect(
-        "运动类型（可多选）",
-        ACTIVITY_TYPES,
-        default=[],
-        help="一次运动包含多种内容时可以多选，例如：爬坡、力量训练。",
-        key="submit_activity_types",
-    )
+    if hasattr(st, "pills"):
+        activity_types = st.pills(
+            "运动类型（可多选）",
+            ACTIVITY_TYPES,
+            selection_mode="multi",
+            default=[],
+            help="一次运动包含多种内容时可以多选，例如：爬坡、力量训练。",
+            key="submit_activity_types",
+        )
+    else:
+        activity_types = st.multiselect(
+            "运动类型（可多选）",
+            ACTIVITY_TYPES,
+            default=[],
+            help="一次运动包含多种内容时可以多选，例如：爬坡、力量训练。",
+            key="submit_activity_types",
+        )
+
+    if activity_types is None:
+        activity_types = []
 
     if activity_types:
-        primary_activity_type = st.selectbox(
-            "主要运动",
-            activity_types,
-            help="主要运动只能从已选择的运动类型中选择，且必须不少于最低分钟数。",
-            key="submit_primary_activity_type",
-        )
+        if hasattr(st, "segmented_control"):
+            primary_activity_type = st.segmented_control(
+                "主要运动",
+                activity_types,
+                default=activity_types[0],
+                help="主要运动只能从已选择的运动类型中选择，且必须不少于最低分钟数。",
+                key="submit_primary_activity_type",
+            )
+        else:
+            primary_activity_type = st.selectbox(
+                "主要运动",
+                activity_types,
+                help="主要运动只能从已选择的运动类型中选择，且必须不少于最低分钟数。",
+                key="submit_primary_activity_type",
+            )
     else:
         primary_activity_type = ""
         st.info("请选择至少一种运动类型。")
@@ -1487,6 +1752,7 @@ with tab_submit:
         disabled=not activity_types,
         type="primary",
         key="submit_checkin_button",
+        use_container_width=True,
     )
 
     if submitted:
@@ -1953,7 +2219,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
         if top_time.empty:
             st.info("暂无候选。")
         else:
-            st.dataframe(top_time, use_container_width=True, hide_index=True)
+            render_blue_table(top_time, use_container_width=True, hide_index=True)
 
     with rank_col2:
         st.markdown("##### 总运动次数前三")
@@ -1961,7 +2227,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
         if top_count.empty:
             st.info("暂无候选。")
         else:
-            st.dataframe(top_count, use_container_width=True, hide_index=True)
+            render_blue_table(top_count, use_container_width=True, hide_index=True)
 
     with rank_col3:
         st.markdown("##### 总达标率前三")
@@ -1969,7 +2235,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
         if top_rate.empty:
             st.info("暂无候选。")
         else:
-            st.dataframe(top_rate, use_container_width=True, hide_index=True)
+            render_blue_table(top_rate, use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -1994,7 +2260,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
                 else row["指标值"],
                 axis=1,
             )
-            st.dataframe(candidate_view, use_container_width=True, hide_index=True)
+            render_blue_table(candidate_view, use_container_width=True, hide_index=True)
 
         st.markdown("#### 每人推荐入围项")
         if recommended_items.empty:
@@ -2007,7 +2273,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
                 else row["指标值"],
                 axis=1,
             )
-            st.dataframe(recommended_view, use_container_width=True, hide_index=True)
+            render_blue_table(recommended_view, use_container_width=True, hide_index=True)
 
         summary_view = summary.copy()
         summary_view["有效运动次数"] = summary_view["有效运动次数"].apply(format_goal_credit)
@@ -2018,7 +2284,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
         summary_view["进步展示资格"] = summary_view["进步展示资格"].map({True: "是", False: "否"})
 
         with st.expander("完整评选指标表"):
-            st.dataframe(summary_view, use_container_width=True, hide_index=True)
+            render_blue_table(summary_view, use_container_width=True, hide_index=True)
 
             st.download_button(
                 label="导出当前评选指标 CSV",
@@ -2044,7 +2310,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
                     ]
                 ].copy()
                 view["总达标率"] = view["总达标率"].map(lambda x: f"{float(x):.1f}%")
-                st.dataframe(view, use_container_width=True, hide_index=True)
+                render_blue_table(view, use_container_width=True, hide_index=True)
 
         with right:
             st.markdown("#### 进步展示资格")
@@ -2061,11 +2327,11 @@ def render_selection_board(df_all: pd.DataFrame, today):
                     ]
                 ].copy()
                 view["总达标率"] = view["总达标率"].map(lambda x: f"{float(x):.1f}%")
-                st.dataframe(view, use_container_width=True, hide_index=True)
+                render_blue_table(view, use_container_width=True, hide_index=True)
 
     with selection_tab3:
         st.caption("每个人在所选月份里的逐月达标情况。")
-        st.dataframe(monthly_detail, use_container_width=True, hide_index=True)
+        render_blue_table(monthly_detail, use_container_width=True, hide_index=True)
 
         st.download_button(
             label="导出月度明细 CSV",
@@ -2104,7 +2370,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
                 ]
             ].copy()
             view["总达标率"] = view["总达标率"].map(lambda x: f"{float(x):.1f}%")
-            st.dataframe(view, use_container_width=True, hide_index=True)
+            render_blue_table(view, use_container_width=True, hide_index=True)
 
 
 
@@ -2196,7 +2462,6 @@ def increment_reaction(checkin_id: int, emoji_key: str):
     load_message_reactions.clear()
 
 def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
-    st.markdown("### 留言板")
     st.caption("大家打卡时随手写下的运动碎碎念。")
 
     if df_all.empty or "note" not in df_all.columns:
@@ -2230,19 +2495,19 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
         """
         <style>
         .message-board-intro {
-            color: #7c6f64;
+            color: #475569;
             line-height: 1.8;
             margin: 0.2rem 0 1.1rem 0;
             font-size: 0.96rem;
         }
 
         .message-card {
-            border: 1px solid rgba(120, 92, 65, 0.14);
+            border: 1px solid rgba(37, 99, 235, 0.14);
             border-radius: 18px;
             padding: 1rem 1.05rem;
             margin-bottom: 0.45rem;
-            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,248,245,0.92));
-            box-shadow: 0 8px 22px rgba(55, 48, 40, 0.055);
+            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(234,242,255,0.92));
+            box-shadow: 0 8px 22px rgba(37, 99, 235, 0.08);
         }
 
         .message-card:hover {
@@ -2251,7 +2516,7 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
         }
 
         .message-meta {
-            color: #7c6f64;
+            color: #475569;
             font-size: 0.9rem;
             margin-bottom: 0.55rem;
             line-height: 1.55;
@@ -2259,11 +2524,11 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
 
         .message-name {
             font-weight: 700;
-            color: #3f3027;
+            color: #172033;
         }
 
         .message-note {
-            color: #2f2a25;
+            color: #172033;
             font-size: 1.02rem;
             line-height: 1.75;
             white-space: pre-wrap;
@@ -2271,11 +2536,11 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
         }
 
         .message-activity {
-            color: #8a6a4f;
+            color: #2563EB;
         }
 
         .reaction-row-note {
-            color: #8b7a6a;
+            color: #64748B;
             font-size: 0.82rem;
             margin: -0.1rem 0 0.35rem 0;
         }
@@ -2367,8 +2632,6 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
 
 
 def render_recent_image_gallery(df_all: pd.DataFrame, limit: int = 12):
-    st.markdown("### 运动相册")
-
     if df_all.empty or "file_path" not in df_all.columns:
         st.info("还没有可展示的图片。")
         return
@@ -2432,10 +2695,10 @@ def render_recent_image_gallery(df_all: pd.DataFrame, limit: int = 12):
         <style>
         .gallery-frame {
             border-radius: 22px;
-            border: 1px solid rgba(120, 92, 65, 0.14);
+            border: 1px solid rgba(37, 99, 235, 0.14);
             padding: 0.8rem;
-            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,248,245,0.92));
-            box-shadow: 0 12px 28px rgba(55, 48, 40, 0.07);
+            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(234,242,255,0.92));
+            box-shadow: 0 12px 28px rgba(37, 99, 235, 0.09);
             margin-top: 0.5rem;
             margin-bottom: 1rem;
         }
@@ -2497,7 +2760,7 @@ def render_recent_image_gallery(df_all: pd.DataFrame, limit: int = 12):
             }
         )
 
-        st.dataframe(records, use_container_width=True, hide_index=True)
+        render_blue_table(records, use_container_width=True, hide_index=True)
 
 
 # -----------------------------
@@ -2537,25 +2800,25 @@ with tab_dashboard:
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            st.metric(
+            render_blue_stat_card(
                 "今日参与人数",
                 df_today["name"].nunique() if not df_today.empty else 0,
             )
 
         with col2:
-            st.metric(
+            render_blue_stat_card(
                 "本周总分钟",
                 int(df_week["duration_min"].sum()) if not df_week.empty else 0,
             )
 
         with col3:
-            st.metric(
+            render_blue_stat_card(
                 "本月总分钟",
                 int(df_month["duration_min"].sum()) if not df_month.empty else 0,
             )
 
         with col4:
-            st.metric(
+            render_blue_stat_card(
                 "本月参与人数",
                 df_month["name"].nunique() if not df_month.empty else 0,
             )
@@ -2621,7 +2884,7 @@ with tab_dashboard:
             }
         )
 
-        st.dataframe(
+        render_blue_table(
             monthly_goal_view,
             use_container_width=True,
             hide_index=True,
@@ -2651,7 +2914,7 @@ with tab_dashboard:
             }
         )
 
-        st.dataframe(
+        render_blue_table(
             goal_streak_view,
             use_container_width=True,
             hide_index=True,
@@ -2679,7 +2942,7 @@ with tab_dashboard:
                 }
             )
 
-            st.dataframe(
+            render_blue_table(
                 history_view.sort_values(["月份", "姓名"], ascending=[False, True]),
                 use_container_width=True,
                 hide_index=True,
@@ -2700,7 +2963,7 @@ with tab_dashboard:
             if weekly_board.empty:
                 st.info("本周还没有打卡记录。")
             else:
-                st.dataframe(
+                render_blue_table(
                     weekly_board,
                     use_container_width=True,
                     hide_index=True,
@@ -2714,7 +2977,7 @@ with tab_dashboard:
             if monthly_board.empty:
                 st.info("本月还没有打卡记录。")
             else:
-                st.dataframe(
+                render_blue_table(
                     monthly_board,
                     use_container_width=True,
                     hide_index=True,
@@ -2747,7 +3010,7 @@ with tab_dashboard:
         if activity_board.empty:
             st.info("本月还没有运动类型数据。")
         else:
-            st.dataframe(
+            render_blue_table(
                 activity_board,
                 use_container_width=True,
                 hide_index=True,
@@ -2766,7 +3029,7 @@ with tab_dashboard:
         if diversity_board.empty:
             st.info("本月还没有运动多样性数据。")
         else:
-            st.dataframe(
+            render_blue_table(
                 diversity_board,
                 use_container_width=True,
                 hide_index=True,
@@ -2781,7 +3044,7 @@ with tab_dashboard:
 
         presence_week = make_daily_presence_table(df_week, week_start, week_end)
 
-        st.dataframe(
+        render_blue_table(
             presence_week,
             use_container_width=True,
             hide_index=True,
@@ -2819,7 +3082,7 @@ with tab_dashboard:
                 )
             )
 
-            st.dataframe(
+            render_blue_table(
                 recent,
                 use_container_width=True,
                 hide_index=True,
@@ -2926,7 +3189,7 @@ with tab_goal:
         }
     )
 
-    st.dataframe(
+    render_blue_table(
         contribution_view,
         use_container_width=True,
         hide_index=True,
