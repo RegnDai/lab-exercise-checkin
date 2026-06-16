@@ -287,6 +287,23 @@ MESSAGE_REACTIONS = [
     ("cry", "🥲", "感性了"),
 ]
 
+
+MOOD_OPTIONS = [
+    ("happy", "😊", "开心"),
+    ("accomplished", "🌟", "成就感"),
+    ("relaxed", "😌", "放松"),
+    ("tired_good", "😮‍💨", "累"),
+    ("annoyed", "😤", "有点烦"),
+]
+
+MOOD_LOOKUP = {
+    key: {"emoji": emoji, "label": label}
+    for key, emoji, label in MOOD_OPTIONS
+}
+
+MOOD_KEYS = [key for key, _, _ in MOOD_OPTIONS]
+
+
 ACTIVITY_TYPES = [
     "健身",
     "力量训练",
@@ -554,6 +571,35 @@ def format_goal_credit(value) -> str:
     if number.is_integer():
         return str(int(number))
     return f"{number:.1f}".rstrip("0").rstrip(".")
+
+
+
+def format_mood_key(mood_key) -> str:
+    mood = MOOD_LOOKUP.get(str(mood_key), None)
+
+    if not mood:
+        return "未知的心情"
+
+    return f"{mood['emoji']} {mood['label']}"
+
+
+def mood_emoji(mood_key) -> str:
+    mood = MOOD_LOOKUP.get(str(mood_key), None)
+
+    if not mood:
+        return ""
+
+    return mood["emoji"]
+
+
+def mood_label(mood_key) -> str:
+    mood = MOOD_LOOKUP.get(str(mood_key), None)
+
+    if not mood:
+        return "未知的心情"
+
+    return mood["label"]
+
 
 
 def add_goal_credit_columns(df: pd.DataFrame, target_minutes: int) -> pd.DataFrame:
@@ -824,6 +870,9 @@ def load_checkins() -> pd.DataFrame:
         .fillna(0)
         .astype(int)
     )
+
+    if "mood_key" not in df.columns:
+        df["mood_key"] = None
 
     return df
 
@@ -1636,7 +1685,7 @@ if not st.session_state.invite_ok:
 # Main tabs
 # -----------------------------
 
-tab_submit, tab_dashboard, tab_goal, tab_selection, tab_gallery, tab_message, tab_admin = st.tabs(["打卡", "总览", "本月目标", "评选", "相册", "留言板", "后台"])
+tab_submit, tab_dashboard, tab_goal, tab_selection, tab_diary, tab_gallery, tab_message, tab_admin = st.tabs(["打卡", "总览", "本月目标", "评选", "运动日记", "相册", "留言板", "后台"])
 
 
 # -----------------------------
@@ -1741,6 +1790,25 @@ with tab_submit:
         key="submit_uploaded_file",
     )
 
+    if hasattr(st, "pills"):
+        mood_key = st.pills(
+            "运动后的心情",
+            MOOD_KEYS,
+            selection_mode="single",
+            default=None,
+            format_func=format_mood_key,
+            help="选一个最接近今天运动结束后的状态。",
+            key="submit_mood_key",
+        )
+    else:
+        mood_key = st.radio(
+            "运动后的心情",
+            [None] + MOOD_KEYS,
+            format_func=lambda x: "暂不记录" if x is None else format_mood_key(x),
+            horizontal=True,
+            key="submit_mood_key",
+        )
+
     note = st.text_area(
         "今天有什么想说的？",
         placeholder="记录一点今天的状态、心情、运动感受，或者随便写一句话。",
@@ -1783,6 +1851,7 @@ with tab_submit:
                     "activity_date": activity_date.isoformat(),
                     "activity_type": activity_type,
                     "duration_min": int(duration_min),
+                    "mood_key": mood_key or None,
                     "note": note.strip() or None,
                     "file_path": file_info["file_path"],
                     "file_name": file_info["file_name"],
@@ -2626,6 +2695,405 @@ def render_message_board(df_all: pd.DataFrame, max_cards: int = 80):
         st.caption(f"这里展示最近 {max_cards} 条留言。更早的备注仍然保存在后台记录里。")
 
 
+
+# -----------------------------
+# Mood diary helpers
+# -----------------------------
+
+def _diary_available_months(df_all: pd.DataFrame, today) -> list[str]:
+    months = set()
+
+    if not df_all.empty and "activity_date" in df_all.columns:
+        dates = pd.to_datetime(df_all["activity_date"], errors="coerce").dropna()
+
+        if not dates.empty:
+            months.update(dates.dt.to_period("M").astype(str).tolist())
+
+    months.add(str(pd.Period(today, freq="M")))
+
+    return sorted(months)
+
+
+def _diary_month_label(month_value: str) -> str:
+    try:
+        period = pd.Period(month_value, freq="M")
+        return f"{period.year}年{period.month}月"
+    except Exception:
+        return str(month_value)
+
+
+def _format_diary_activity(value: str) -> str:
+    return str(value).replace(PRIMARY_ACTIVITY_SUFFIX, "")
+
+
+
+def _clean_diary_text(value) -> str:
+    if value is None:
+        return ""
+
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    text_value = str(value).strip()
+
+    if text_value.lower() in ["nan", "none", "nat"]:
+        return ""
+
+    return text_value
+
+
+def _build_day_tooltip(day_records: pd.DataFrame) -> str:
+    if day_records.empty:
+        return ""
+
+    lines = []
+
+    for _, record in day_records.sort_values("submitted_at").iterrows():
+        activity = escape(_format_diary_activity(_clean_diary_text(record.get("activity_type", ""))))
+        minutes = escape(_clean_diary_text(record.get("duration_min", "")))
+        note = escape(_clean_diary_text(record.get("note", "")))
+        mood = escape(format_mood_key(record.get("mood_key")))
+
+        item = f"<div class='diary-tip-item'><b>{mood}</b> ｜ {activity} ｜ {minutes} 分钟"
+
+        if note:
+            item += f"<br><span>{note}</span>"
+
+        item += "</div>"
+        lines.append(item)
+
+    return "".join(lines)
+
+
+def render_mood_calendar(df_person_month: pd.DataFrame, year: int, month: int):
+    import calendar
+
+    cal = calendar.Calendar(firstweekday=0)
+    weeks = cal.monthdatescalendar(year, month)
+
+    by_date = {}
+
+    if not df_person_month.empty:
+        temp = df_person_month.copy()
+        temp["activity_date"] = pd.to_datetime(temp["activity_date"], errors="coerce").dt.date
+        temp = temp.dropna(subset=["activity_date"])
+
+        for day, group in temp.groupby("activity_date"):
+            by_date[day] = group.copy()
+
+    weekday_labels = ["一", "二", "三", "四", "五", "六", "日"]
+
+    html = [
+        """
+        <style>
+        .diary-calendar {
+            width: 100%;
+            border: 1px solid #C8D8F0;
+            border-radius: 1.15rem;
+            overflow: visible;
+            background: #FFFFFF;
+            box-shadow: 0 10px 24px rgba(37, 99, 235, 0.07);
+            margin-top: 0.7rem;
+        }
+
+        .diary-weekdays,
+        .diary-week {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+        }
+
+        .diary-weekday {
+            padding: 0.7rem 0.45rem;
+            text-align: center;
+            color: #1D4ED8;
+            font-weight: 750;
+            background: linear-gradient(180deg, #EAF2FF 0%, #DCEBFF 100%);
+            border-bottom: 1px solid #C8D8F0;
+        }
+
+        .diary-day {
+            position: relative;
+            min-height: 104px;
+            padding: 0.62rem;
+            border-right: 1px solid #E5EEF8;
+            border-bottom: 1px solid #E5EEF8;
+            background: #FFFFFF;
+        }
+
+        .diary-week .diary-day:nth-child(7) {
+            border-right: 0;
+        }
+
+        .diary-day.muted {
+            background: #F8FBFF;
+            color: #CBD5E1;
+        }
+
+        .diary-day.has-record {
+            background:
+                radial-gradient(circle at top right, rgba(37, 99, 235, 0.13), transparent 38%),
+                linear-gradient(180deg, #FFFFFF 0%, #F4F8FF 100%);
+        }
+
+        .diary-date {
+            color: #475569;
+            font-size: 0.88rem;
+            font-weight: 700;
+        }
+
+        .diary-moods {
+            margin-top: 0.55rem;
+            font-size: 1.45rem;
+            line-height: 1.35;
+            min-height: 2rem;
+        }
+
+        .diary-count {
+            margin-top: 0.25rem;
+            color: #64748B;
+            font-size: 0.78rem;
+        }
+
+        .diary-tooltip {
+            display: none;
+            position: absolute;
+            left: 0.45rem;
+            top: 4.6rem;
+            width: min(280px, 72vw);
+            z-index: 20;
+            background: #172033;
+            color: #F8FAFC;
+            border-radius: 0.9rem;
+            padding: 0.78rem 0.85rem;
+            box-shadow: 0 14px 34px rgba(15, 23, 42, 0.24);
+            font-size: 0.86rem;
+            line-height: 1.55;
+        }
+
+        .diary-tooltip::before {
+            content: "";
+            position: absolute;
+            top: -7px;
+            left: 18px;
+            width: 14px;
+            height: 14px;
+            transform: rotate(45deg);
+            background: #172033;
+        }
+
+        .diary-tip-item {
+            padding: 0.35rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.13);
+        }
+
+        .diary-tip-item:last-child {
+            border-bottom: 0;
+        }
+
+        .diary-tip-item span {
+            color: #CBD5E1;
+        }
+
+        .diary-day.has-record:hover {
+            outline: 2px solid rgba(37, 99, 235, 0.32);
+            outline-offset: -2px;
+        }
+
+        .diary-day.has-record:hover .diary-tooltip {
+            display: block;
+        }
+
+        @media (max-width: 760px) {
+            .diary-day {
+                min-height: 82px;
+                padding: 0.45rem;
+            }
+
+            .diary-moods {
+                font-size: 1.15rem;
+            }
+
+            .diary-count {
+                display: none;
+            }
+        }
+        </style>
+        <div class="diary-calendar">
+        <div class="diary-weekdays">
+        """
+    ]
+
+    for label in weekday_labels:
+        html.append(f"<div class='diary-weekday'>{label}</div>")
+
+    html.append("</div>")
+
+    for week in weeks:
+        html.append("<div class='diary-week'>")
+
+        for day in week:
+            day_records = by_date.get(day)
+            in_month = day.month == month
+            classes = ["diary-day"]
+
+            if not in_month:
+                classes.append("muted")
+
+            if day_records is not None and not day_records.empty:
+                classes.append("has-record")
+
+            mood_keys = []
+
+            if day_records is not None and not day_records.empty and "mood_key" in day_records.columns:
+                for key in day_records["mood_key"].dropna().astype(str).tolist():
+                    if key and key not in mood_keys:
+                        mood_keys.append(key)
+
+            moods = "".join(mood_emoji(key) for key in mood_keys if mood_emoji(key))
+
+            if day_records is not None and not day_records.empty and not moods:
+                activity_emojis = []
+
+                for activity_value in day_records["activity_type"].dropna().astype(str).tolist():
+                    emoji = _activity_emoji(activity_value)
+
+                    if emoji and emoji not in activity_emojis:
+                        activity_emojis.append(emoji)
+
+                moods = "".join(activity_emojis) if activity_emojis else "✨"
+
+            count_text = ""
+            tooltip = ""
+
+            if day_records is not None and not day_records.empty:
+                count_text = f"<div class='diary-count'>{len(day_records)} 条记录</div>"
+                tooltip = f"<div class='diary-tooltip'>{_build_day_tooltip(day_records)}</div>"
+
+            html.append(
+                f"""
+                <div class="{' '.join(classes)}">
+                    <div class="diary-date">{day.day}</div>
+                    <div class="diary-moods">{moods}</div>
+                    {count_text}
+                    {tooltip}
+                </div>
+                """
+            )
+
+        html.append("</div>")
+
+    html.append("</div>")
+
+    calendar_html = "".join(html)
+
+    if hasattr(st, "html"):
+        st.html(calendar_html)
+    else:
+        st.markdown(calendar_html, unsafe_allow_html=True)
+
+
+def render_mood_diary(df_all: pd.DataFrame, today):
+    st.caption("选择一个成员，查看 TA 的运动日历。日期下方显示当天运动后的心情；悬浮在日期上可以看到运动内容和碎碎念。")
+
+    if df_all.empty:
+        st.info("还没有记录。")
+        return
+
+    members = get_active_members()
+
+    if not members:
+        members = sorted(df_all["name"].dropna().astype(str).unique().tolist())
+
+    if not members:
+        st.info("还没有成员。")
+        return
+
+    if hasattr(st, "pills"):
+        selected_name = st.pills(
+            "选择成员",
+            members,
+            selection_mode="single",
+            default=members[0],
+            key="diary_selected_member",
+        )
+    else:
+        selected_name = st.selectbox(
+            "选择成员",
+            members,
+            key="diary_selected_member",
+        )
+
+    if not selected_name:
+        st.info("请选择一个成员。")
+        return
+
+    available_months = _diary_available_months(df_all, today)
+    current_month = str(pd.Period(today, freq="M"))
+    default_month = current_month if current_month in available_months else available_months[-1]
+
+    if hasattr(st, "segmented_control") and len(available_months) <= 8:
+        selected_month = st.segmented_control(
+            "选择月份",
+            available_months,
+            default=default_month,
+            format_func=_diary_month_label,
+            key="diary_selected_month",
+        )
+    else:
+        selected_month = st.selectbox(
+            "选择月份",
+            available_months,
+            index=available_months.index(default_month),
+            format_func=_diary_month_label,
+            key="diary_selected_month",
+        )
+
+    if not selected_month:
+        return
+
+    period = pd.Period(selected_month, freq="M")
+
+    person = df_all[df_all["name"].astype(str) == str(selected_name)].copy()
+    person["month"] = pd.to_datetime(person["activity_date"], errors="coerce").dt.to_period("M").astype(str)
+    person_month = person[person["month"] == selected_month].copy()
+
+    total_records = len(person_month)
+    total_minutes = int(person_month["duration_min"].sum()) if not person_month.empty else 0
+    active_days = int(person_month["activity_date"].nunique()) if not person_month.empty else 0
+
+    stat1, stat2, stat3 = st.columns(3)
+
+    with stat1:
+        render_blue_stat_card("本月记录", total_records)
+
+    with stat2:
+        render_blue_stat_card("运动天数", active_days)
+
+    with stat3:
+        render_blue_stat_card("总分钟", total_minutes)
+
+    if not person_month.empty and "mood_key" in person_month.columns:
+        mood_counts = (
+            person_month["mood_key"]
+            .dropna()
+            .astype(str)
+            .value_counts()
+        )
+
+        if not mood_counts.empty:
+            mood_summary = "　".join(
+                f"{format_mood_key(key)} × {count}"
+                for key, count in mood_counts.items()
+            )
+            st.caption(f"本月心情分布：{mood_summary}")
+
+    render_mood_calendar(person_month, period.year, period.month)
+
+
+
 # -----------------------------
 # Gallery helpers
 # -----------------------------
@@ -3219,6 +3687,25 @@ with tab_selection:
 
     today = get_now_local().date()
     render_selection_board(df_all, today)
+
+
+
+# -----------------------------
+# Mood diary tab
+# -----------------------------
+
+with tab_diary:
+    st.subheader("运动日记")
+
+    try:
+        df_all = load_checkins()
+    except Exception as e:
+        st.error("读取记录失败。")
+        st.exception(e)
+        st.stop()
+
+    today = get_now_local().date()
+    render_mood_diary(df_all, today)
 
 
 # -----------------------------
