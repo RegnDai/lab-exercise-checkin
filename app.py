@@ -272,6 +272,9 @@ MIN_SUBMIT_MINUTES = int(
     )
 )
 
+# Records before this date are historical backfills and do not require photos.
+PHOTO_REQUIRED_START_DATE = datetime(2026, 5, 1).date()
+
 ACTIVITY_TYPE_SEPARATOR = "、"
 PRIMARY_ACTIVITY_SUFFIX = "（主要）"
 HALF_CREDIT_ACTIVITY_TYPES = list(
@@ -1703,6 +1706,8 @@ with tab_submit:
                 - 需要指定一个主要运动。
                 - 主要运动不少于 **{MIN_SUBMIT_MINUTES} 分钟** 才能提交。
                 - 散步、走够一万步默认按半次有效打卡计入目标。
+                - 2026年5月之前的历史补卡不需要上传照片。
+                - 2026年5月及之后的打卡需要上传截图或照片。
                 - 上传图片会自动压缩，不需要自己处理。
                 """
             )
@@ -1721,6 +1726,13 @@ with tab_submit:
         value=get_now_local().date(),
         key="submit_activity_date",
     )
+
+    photo_required = activity_date >= PHOTO_REQUIRED_START_DATE
+
+    if photo_required:
+        st.caption("2026年5月及之后的打卡需要上传截图或照片。")
+    else:
+        st.caption("历史补卡：2026年5月之前的记录不需要上传照片。")
 
     if hasattr(st, "pills"):
         activity_types = st.pills(
@@ -1784,7 +1796,7 @@ with tab_submit:
     )
 
     uploaded_file = st.file_uploader(
-        f"上传截图或照片（原图不超过 {MAX_SOURCE_UPLOAD_MB} MB，系统会自动压缩）",
+        f"上传截图或照片（2026年5月及之后必填；原图不超过 {MAX_SOURCE_UPLOAD_MB} MB，系统会自动压缩）",
         type=["jpg", "jpeg", "png", "webp"],
         accept_multiple_files=False,
         key="submit_uploaded_file",
@@ -1836,15 +1848,18 @@ with tab_submit:
             st.error("请选择至少一种运动类型。")
         elif primary_activity_type not in activity_types:
             st.error("主要运动必须包含在已选择的运动类型里。")
-        elif uploaded_file is None:
-            st.error("请上传一张截图或照片。")
+        elif photo_required and uploaded_file is None:
+            st.error("2026年5月及之后的打卡需要上传截图或照片。")
         elif int(primary_duration_min) < MIN_SUBMIT_MINUTES:
             st.error(f"主要运动至少需要 {MIN_SUBMIT_MINUTES} 分钟。")
         elif int(duration_min) < int(primary_duration_min):
             st.error("总运动时长不能小于主要运动时长。")
         else:
             try:
-                file_info = upload_image(uploaded_file, name, activity_date)
+                file_info = None
+
+                if uploaded_file is not None:
+                    file_info = upload_image(uploaded_file, name, activity_date)
 
                 row = {
                     "name": name,
@@ -1853,10 +1868,10 @@ with tab_submit:
                     "duration_min": int(duration_min),
                     "mood_key": mood_key or None,
                     "note": note.strip() or None,
-                    "file_path": file_info["file_path"],
-                    "file_name": file_info["file_name"],
-                    "file_mime": file_info["file_mime"],
-                    "file_size": file_info["file_size"],
+                    "file_path": file_info["file_path"] if file_info else None,
+                    "file_name": file_info["file_name"] if file_info else None,
+                    "file_mime": file_info["file_mime"] if file_info else None,
+                    "file_size": file_info["file_size"] if file_info else None,
                     "submitted_at": datetime.now().astimezone().isoformat(),
                 }
 
