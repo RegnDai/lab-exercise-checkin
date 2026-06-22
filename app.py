@@ -328,6 +328,7 @@ ACTIVITY_TYPES = [
     "呼啦圈",
     "爬楼",
     "椭圆机",
+    "踏步机",
     "划船机",
     "瑜伽",
     "普拉提",
@@ -3031,7 +3032,7 @@ def _activity_emoji(activity_type: str) -> str:
 
     joined = "、".join(types)
 
-    if any(x in joined for x in ["跑步", "爬坡", "爬楼", "椭圆机"]):
+    if any(x in joined for x in ["跑步", "爬坡", "爬楼", "椭圆机", "踏步机"]):
         return "🏃"
     if any(x in joined for x in ["力量", "健身", "划船机"]):
         return "💪"
