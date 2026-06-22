@@ -1868,7 +1868,7 @@ if not st.session_state.invite_ok:
 # Main tabs
 # -----------------------------
 
-tab_submit, tab_dashboard, tab_goal, tab_selection, tab_diary, tab_gallery, tab_message, tab_admin = st.tabs(["打卡", "总览", "本月目标", "评选", "运动日记", "相册", "留言板", "后台"])
+tab_submit, tab_dashboard, tab_goal, tab_selection, tab_diary, tab_gallery, tab_audit, tab_message, tab_admin = st.tabs(["打卡", "总览", "本月目标", "评选", "运动日记", "相册", "我要监督！", "留言板", "后台"])
 
 
 # -----------------------------
@@ -3856,6 +3856,176 @@ def render_recent_image_gallery(df_all: pd.DataFrame, limit: int = 12):
         render_blue_table(records, use_container_width=True, hide_index=True)
 
 
+
+# -----------------------------
+# Audit helpers
+# -----------------------------
+
+def _audit_clean_value(value) -> str:
+    if value is None:
+        return ""
+
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    text_value = str(value).strip()
+
+    if text_value.lower() in ["nan", "none", "nat"]:
+        return ""
+
+    return text_value
+
+
+def _audit_time_value(value) -> str:
+    if value is None:
+        return ""
+
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    if hasattr(value, "strftime"):
+        try:
+            return value.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+
+    return str(value)
+
+
+def render_random_audit_board(df_all: pd.DataFrame):
+    st.caption(
+        "随机抽取一条带照片的打卡记录，用来核对：照片、运动类型、时长、备注是否大体相符。"
+    )
+
+    if df_all.empty:
+        st.info("还没有记录可监督。")
+        return
+
+    if "file_path" not in df_all.columns:
+        st.info("当前记录里没有图片字段，暂时无法监督照片。")
+        return
+
+    audit_df = df_all.copy()
+    audit_df["file_path"] = audit_df["file_path"].fillna("").astype(str).str.strip()
+    audit_df = audit_df[audit_df["file_path"] != ""].copy()
+
+    if audit_df.empty:
+        st.info("还没有带照片的记录可监督。")
+        return
+
+    if "id" not in audit_df.columns:
+        st.warning("记录缺少 ID 字段，暂时无法稳定随机抽查。")
+        return
+
+    audit_df["_audit_id"] = pd.to_numeric(
+        audit_df["id"],
+        errors="coerce",
+    )
+
+    audit_df = audit_df.dropna(subset=["_audit_id"]).copy()
+
+    if audit_df.empty:
+        st.info("没有可识别 ID 的记录可监督。")
+        return
+
+    audit_df["_audit_id"] = audit_df["_audit_id"].astype(int)
+    valid_ids = audit_df["_audit_id"].tolist()
+
+    control_col1, control_col2 = st.columns([1, 2])
+
+    with control_col1:
+        random_clicked = st.button(
+            "🎲 随机抽一条",
+            type="primary",
+            use_container_width=True,
+            key="audit_random_pick",
+        )
+
+    with control_col2:
+        st.caption(f"当前可抽查记录：{len(audit_df)} 条。只抽取带照片的记录。")
+
+    current_id = st.session_state.get("audit_selected_record_id", None)
+
+    if random_clicked or current_id not in valid_ids:
+        selected_id = int(audit_df.sample(n=1).iloc[0]["_audit_id"])
+        st.session_state["audit_selected_record_id"] = selected_id
+    else:
+        selected_id = int(current_id)
+
+    selected = audit_df[audit_df["_audit_id"] == selected_id]
+
+    if selected.empty:
+        st.info("这条记录可能已经被删除，请重新抽取。")
+        return
+
+    row = selected.iloc[0]
+
+    file_path = _audit_clean_value(row.get("file_path"))
+    signed_url = None
+
+    try:
+        signed_url = create_signed_image_url(file_path)
+    except Exception as e:
+        st.warning("图片临时链接生成失败，但记录信息仍可查看。")
+        st.exception(e)
+
+    image_col, info_col = st.columns([1.15, 1])
+
+    with image_col:
+        st.markdown("#### 抽查照片")
+
+        if signed_url:
+            st.image(
+                signed_url,
+                caption=f"{_audit_clean_value(row.get('name'))} ｜ {_audit_clean_value(row.get('activity_date'))}",
+                use_container_width=True,
+            )
+
+            if hasattr(st, "link_button"):
+                st.link_button("打开图片原图", signed_url, use_container_width=True)
+        else:
+            st.warning("这条记录的图片暂时无法显示。")
+
+    with info_col:
+        st.markdown("#### 抽查记录")
+
+        mood_text = (
+            format_mood_key(row.get("mood_key"))
+            if "mood_key" in row.index
+            else "未记录"
+        )
+
+        record_view = pd.DataFrame(
+            [
+                {
+                    "记录ID": int(row.get("_audit_id")),
+                    "姓名": _audit_clean_value(row.get("name")),
+                    "运动日期": _audit_clean_value(row.get("activity_date")),
+                    "运动类型": _audit_clean_value(row.get("activity_type")).replace(PRIMARY_ACTIVITY_SUFFIX, ""),
+                    "运动时长": f"{_audit_clean_value(row.get('duration_min'))} 分钟",
+                    "运动后心情": mood_text,
+                    "碎碎念": _audit_clean_value(row.get("note")) or "—",
+                    "提交时间": _audit_time_value(row.get("submitted_at")) or "—",
+                    "图片文件名": _audit_clean_value(row.get("file_name")) or "—",
+                }
+            ]
+        )
+
+        render_blue_table(record_view, use_container_width=True, hide_index=True)
+
+    st.info(
+        "监督原则：只判断是否明显不相符。比如照片完全不是运动截图/运动照片、"
+        "时长和截图明显冲突、运动类型明显对不上。不要因为截图格式不同就误伤。"
+    )
+
+
+
 # -----------------------------
 # Dashboard tab
 # -----------------------------
@@ -4348,6 +4518,24 @@ with tab_gallery:
         st.stop()
 
     render_recent_image_gallery(df_all, limit=12)
+
+
+
+# -----------------------------
+# Audit tab
+# -----------------------------
+
+with tab_audit:
+    st.subheader("我要监督！")
+
+    try:
+        df_all = load_checkins()
+    except Exception as e:
+        st.error("读取记录失败。")
+        st.exception(e)
+        st.stop()
+
+    render_random_audit_board(df_all)
 
 
 
