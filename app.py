@@ -306,6 +306,9 @@ MOOD_LOOKUP = {
 
 MOOD_KEYS = [key for key, _, _ in MOOD_OPTIONS]
 
+MOOD_SEPARATOR = "、"
+CUSTOM_MOOD_PREFIX = "custom:"
+
 
 ACTIVITY_TYPES = [
     "健身",
@@ -582,17 +585,118 @@ def format_goal_credit(value) -> str:
 
 
 
-def format_mood_key(mood_key) -> str:
-    mood = MOOD_LOOKUP.get(str(mood_key), None)
+def split_mood_keys(value) -> list[str]:
+    if value is None:
+        return []
+
+    try:
+        if pd.isna(value):
+            return []
+    except Exception:
+        pass
+
+    if isinstance(value, (list, tuple, set)):
+        raw_items = []
+        for item in value:
+            raw_items.extend(split_mood_keys(item))
+    else:
+        text_value = str(value).strip()
+
+        if not text_value or text_value.lower() in ["nan", "none", "nat"]:
+            return []
+
+        raw_items = re.split(r"[、,，;；|]+", text_value)
+
+    cleaned = []
+    seen = set()
+
+    for item in raw_items:
+        item = str(item).strip()
+
+        if not item or item.lower() in ["nan", "none", "nat"]:
+            continue
+
+        if item not in seen:
+            cleaned.append(item)
+            seen.add(item)
+
+    return cleaned
+
+
+def make_custom_mood_key(emoji_value, label_value) -> str:
+    emoji_value = "" if emoji_value is None else str(emoji_value).strip()
+    label_value = "" if label_value is None else str(label_value).strip()
+
+    if not emoji_value or not label_value:
+        return ""
+
+    return f"{CUSTOM_MOOD_PREFIX}{emoji_value} {label_value}"
+
+
+def join_mood_values(selected_mood_keys, custom_emoji="", custom_label="") -> str | None:
+    values = split_mood_keys(selected_mood_keys)
+
+    custom_key = make_custom_mood_key(custom_emoji, custom_label)
+
+    if custom_key:
+        values.append(custom_key)
+
+    unique_values = []
+    seen = set()
+
+    for value in values:
+        if value and value not in seen:
+            unique_values.append(value)
+            seen.add(value)
+
+    if not unique_values:
+        return None
+
+    return MOOD_SEPARATOR.join(unique_values)
+
+
+def _format_one_mood_key(mood_key) -> str:
+    mood_key = "" if mood_key is None else str(mood_key).strip()
+
+    if not mood_key:
+        return ""
+
+    if mood_key.startswith(CUSTOM_MOOD_PREFIX):
+        custom_text = mood_key.removeprefix(CUSTOM_MOOD_PREFIX).strip()
+        return custom_text or "未记录"
+
+    mood = MOOD_LOOKUP.get(mood_key, None)
 
     if not mood:
-        return "未知的心情"
+        return mood_key
 
     return f"{mood['emoji']} {mood['label']}"
 
 
-def mood_emoji(mood_key) -> str:
-    mood = MOOD_LOOKUP.get(str(mood_key), None)
+def format_mood_key(mood_key) -> str:
+    mood_keys = split_mood_keys(mood_key)
+
+    if not mood_keys:
+        return "未记录"
+
+    return MOOD_SEPARATOR.join(
+        _format_one_mood_key(key)
+        for key in mood_keys
+        if _format_one_mood_key(key)
+    ) or "未记录"
+
+
+def _one_mood_emoji(mood_key) -> str:
+    mood_key = "" if mood_key is None else str(mood_key).strip()
+
+    if not mood_key:
+        return ""
+
+    if mood_key.startswith(CUSTOM_MOOD_PREFIX):
+        custom_text = mood_key.removeprefix(CUSTOM_MOOD_PREFIX).strip()
+        return custom_text.split()[0] if custom_text else ""
+
+    mood = MOOD_LOOKUP.get(mood_key, None)
 
     if not mood:
         return ""
@@ -600,13 +704,44 @@ def mood_emoji(mood_key) -> str:
     return mood["emoji"]
 
 
+def mood_emoji(mood_key) -> str:
+    mood_keys = split_mood_keys(mood_key)
+
+    if not mood_keys:
+        return ""
+
+    emojis = []
+
+    for key in mood_keys:
+        emoji = _one_mood_emoji(key)
+
+        if emoji and emoji not in emojis:
+            emojis.append(emoji)
+
+    return "".join(emojis)
+
+
 def mood_label(mood_key) -> str:
-    mood = MOOD_LOOKUP.get(str(mood_key), None)
+    mood_keys = split_mood_keys(mood_key)
 
-    if not mood:
-        return "未知的心情"
+    if not mood_keys:
+        return "未记录"
 
-    return mood["label"]
+    labels = []
+
+    for key in mood_keys:
+        if str(key).startswith(CUSTOM_MOOD_PREFIX):
+            custom_text = str(key).removeprefix(CUSTOM_MOOD_PREFIX).strip()
+            parts = custom_text.split(maxsplit=1)
+            label = parts[1] if len(parts) > 1 else custom_text
+        else:
+            mood = MOOD_LOOKUP.get(str(key), None)
+            label = mood["label"] if mood else str(key)
+
+        if label and label not in labels:
+            labels.append(label)
+
+    return MOOD_SEPARATOR.join(labels) if labels else "未记录"
 
 
 
@@ -1787,23 +1922,49 @@ with tab_submit:
     )
 
     if hasattr(st, "pills"):
-        mood_key = st.pills(
-            "运动后的心情",
+        selected_mood_keys = st.pills(
+            "运动后的心情（可多选）",
             MOOD_KEYS,
-            selection_mode="single",
-            default=None,
+            selection_mode="multi",
+            default=[],
             format_func=format_mood_key,
-            help="选一个最接近今天运动结束后的状态。",
-            key="submit_mood_key",
+            help="可以选择多个状态，也可以在下面自定义一个。",
+            key="submit_mood_keys",
         )
     else:
-        mood_key = st.radio(
-            "运动后的心情",
-            [None] + MOOD_KEYS,
-            format_func=lambda x: "暂不记录" if x is None else format_mood_key(x),
-            horizontal=True,
-            key="submit_mood_key",
+        selected_mood_keys = st.multiselect(
+            "运动后的心情（可多选）",
+            MOOD_KEYS,
+            default=[],
+            format_func=format_mood_key,
+            help="可以选择多个状态，也可以在下面自定义一个。",
+            key="submit_mood_keys",
         )
+
+    custom_mood_col1, custom_mood_col2 = st.columns([1, 3])
+
+    with custom_mood_col1:
+        custom_mood_emoji = st.text_input(
+            "自定义 emoji",
+            placeholder="🔥",
+            max_chars=12,
+            key="submit_custom_mood_emoji",
+        )
+
+    with custom_mood_col2:
+        custom_mood_label = st.text_input(
+            "自定义状态",
+            placeholder="充满power / 腰酸背痛 / 我很强壮",
+            key="submit_custom_mood_label",
+        )
+
+    custom_mood_incomplete = bool(custom_mood_emoji.strip()) ^ bool(custom_mood_label.strip())
+
+    mood_key = join_mood_values(
+        selected_mood_keys,
+        custom_mood_emoji,
+        custom_mood_label,
+    )
 
     note = st.text_area(
         "今天有什么想说的？",
@@ -1827,6 +1988,8 @@ with tab_submit:
             st.error("姓名不能为空。")
         elif not activity_types:
             st.error("请选择至少一种运动类型。")
+        elif custom_mood_incomplete:
+            st.error("自定义心情需要同时填写 emoji 和状态文字。")
         elif photo_required and uploaded_file is None:
             st.error("2026年5月及之后的打卡需要上传截图或照片。")
         elif int(duration_min) < MIN_SUBMIT_MINUTES:
@@ -2941,9 +3104,10 @@ def render_mood_calendar(df_person_month: pd.DataFrame, year: int, month: int):
             mood_keys = []
 
             if day_records is not None and not day_records.empty and "mood_key" in day_records.columns:
-                for key in day_records["mood_key"].dropna().astype(str).tolist():
-                    if key and key not in mood_keys:
-                        mood_keys.append(key)
+                for value in day_records["mood_key"].dropna().astype(str).tolist():
+                    for key in split_mood_keys(value):
+                        if key and key not in mood_keys:
+                            mood_keys.append(key)
 
             moods = "".join(mood_emoji(key) for key in mood_keys if mood_emoji(key))
 
@@ -3069,12 +3233,12 @@ def render_mood_diary(df_all: pd.DataFrame, today):
         render_blue_stat_card("总分钟", total_minutes)
 
     if not person_month.empty and "mood_key" in person_month.columns:
-        mood_counts = (
-            person_month["mood_key"]
-            .dropna()
-            .astype(str)
-            .value_counts()
-        )
+        mood_values = []
+
+        for value in person_month["mood_key"].dropna().astype(str).tolist():
+            mood_values.extend(split_mood_keys(value))
+
+        mood_counts = pd.Series(mood_values).value_counts() if mood_values else pd.Series(dtype=int)
 
         if not mood_counts.empty:
             mood_summary = "　".join(
