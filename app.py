@@ -2431,12 +2431,14 @@ def make_selection_tables(
     progress_eligible = summary[summary["进步展示资格"]].copy()
     below_50 = summary[summary["总达标率"] < 50].copy()
 
-    monthly_detail = monthly_grid.rename(
+    monthly_heatmap_detail = monthly_grid.rename(
         columns={
             "name": "姓名",
             "month": "月份",
         }
     ).copy()
+
+    monthly_detail = monthly_heatmap_detail.copy()
 
     if not monthly_detail.empty:
         monthly_detail["月份"] = monthly_detail["月份"].map(_selection_month_label)
@@ -2454,10 +2456,323 @@ def make_selection_tables(
         "progress_eligible": progress_eligible,
         "below_50": below_50,
         "monthly_detail": monthly_detail,
+        "monthly_heatmap_detail": monthly_heatmap_detail,
         "target_checkins": target_checkins,
         "target_minutes": target_minutes,
         "selected_months": selected_months,
     }
+
+
+
+
+def _selection_heatmap_month_label(value) -> str:
+    try:
+        return _selection_month_label(str(value))
+    except Exception:
+        return str(value)
+
+
+def _selection_heatmap_number(value) -> float:
+    try:
+        if pd.isna(value):
+            return 0.0
+    except Exception:
+        pass
+
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _selection_heatmap_value_label(value, metric_col: str) -> str:
+    number = _selection_heatmap_number(value)
+
+    if metric_col in ["月有效运动次数"]:
+        return format_goal_credit(number)
+
+    if metric_col in ["月运动次数", "月运动时长"]:
+        return str(int(round(number)))
+
+    return str(value)
+
+
+def _selection_heatmap_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    text_value = str(value).strip().lower()
+
+    return text_value in [
+        "true",
+        "1",
+        "yes",
+        "y",
+        "是",
+        "✅",
+        "✅ 已达标",
+        "已达标",
+    ]
+
+
+def render_selection_metric_heatmap(
+    dataframe: pd.DataFrame,
+    metric_col: str,
+    title: str,
+    subtitle: str,
+    is_boolean: bool = False,
+):
+    if dataframe.empty or metric_col not in dataframe.columns:
+        st.info(f"{title} 暂无数据。")
+        return
+
+    data = dataframe.copy()
+
+    if "姓名" not in data.columns or "月份" not in data.columns:
+        st.info(f"{title} 暂无数据。")
+        return
+
+    data["姓名"] = data["姓名"].astype(str)
+    data["月份"] = data["月份"].astype(str)
+
+    months = sorted(data["月份"].dropna().unique().tolist())
+
+    if is_boolean:
+        order_score = (
+            data.assign(_achieved=data[metric_col].apply(_selection_heatmap_bool).astype(int))
+            .groupby("姓名")["_achieved"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+    else:
+        order_score = (
+            data.assign(_value=data[metric_col].apply(_selection_heatmap_number))
+            .groupby("姓名")["_value"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+
+    names = order_score.index.tolist()
+
+    pivot = data.pivot_table(
+        index="姓名",
+        columns="月份",
+        values=metric_col,
+        aggfunc="first",
+    ).reindex(index=names, columns=months)
+
+    if is_boolean:
+        max_value = 1.0
+    else:
+        numeric_values = [
+            _selection_heatmap_number(x)
+            for x in pivot.to_numpy().flatten().tolist()
+        ]
+        max_value = max(numeric_values) if numeric_values else 0.0
+        max_value = max(max_value, 1.0)
+
+    month_headers = "".join(
+        f"<th>{escape(_selection_heatmap_month_label(month))}</th>"
+        for month in months
+    )
+
+    rows_html = []
+
+    for name in names:
+        cells = []
+
+        for month in months:
+            value = pivot.loc[name, month] if month in pivot.columns else None
+
+            if is_boolean:
+                achieved = _selection_heatmap_bool(value)
+                label = "✅" if achieved else "—"
+                bg = "#DBEAFE" if achieved else "#F8FBFF"
+                border = "#93C5FD" if achieved else "#E5EEF8"
+                color = "#1D4ED8" if achieved else "#94A3B8"
+            else:
+                number = _selection_heatmap_number(value)
+                ratio = min(max(number / max_value, 0.0), 1.0)
+
+                if number <= 0:
+                    bg = "#F8FBFF"
+                    border = "#E5EEF8"
+                else:
+                    alpha = 0.10 + 0.62 * ratio
+                    bg = f"rgba(37, 99, 235, {alpha:.2f})"
+                    border = "rgba(37, 99, 235, 0.20)"
+
+                color = "#0F172A"
+                label = _selection_heatmap_value_label(value, metric_col)
+
+            cells.append(
+                f"""
+                <td>
+                    <div class="selection-heatmap-cell"
+                         style="background:{bg}; border-color:{border}; color:{color};">
+                        {escape(label)}
+                    </div>
+                </td>
+                """
+            )
+
+        rows_html.append(
+            f"""
+            <tr>
+                <th class="selection-heatmap-name">{escape(str(name))}</th>
+                {''.join(cells)}
+            </tr>
+            """
+        )
+
+    html = f"""
+    <style>
+    .selection-heatmap-card {{
+        border: 1px solid #C8D8F0;
+        border-radius: 1.15rem;
+        background: #FFFFFF;
+        box-shadow: 0 10px 24px rgba(37, 99, 235, 0.07);
+        padding: 1rem 1rem 0.85rem 1rem;
+        margin: 0.55rem 0 1rem 0;
+    }}
+
+    .selection-heatmap-title {{
+        color: #172033;
+        font-weight: 800;
+        font-size: 1.02rem;
+        margin-bottom: 0.25rem;
+    }}
+
+    .selection-heatmap-subtitle {{
+        color: #64748B;
+        font-size: 0.84rem;
+        margin-bottom: 0.75rem;
+        line-height: 1.55;
+    }}
+
+    .selection-heatmap-scroll {{
+        width: 100%;
+        overflow-x: auto;
+    }}
+
+    .selection-heatmap-table {{
+        border-collapse: separate;
+        border-spacing: 0.28rem;
+        min-width: 100%;
+    }}
+
+    .selection-heatmap-table th {{
+        color: #475569;
+        font-size: 0.78rem;
+        white-space: nowrap;
+        text-align: center;
+        font-weight: 750;
+    }}
+
+    .selection-heatmap-name {{
+        text-align: right !important;
+        padding-right: 0.45rem;
+        color: #172033 !important;
+        position: sticky;
+        left: 0;
+        background: #FFFFFF;
+        z-index: 1;
+    }}
+
+    .selection-heatmap-cell {{
+        min-width: 3.4rem;
+        height: 2.15rem;
+        border: 1px solid #E5EEF8;
+        border-radius: 0.7rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.82rem;
+        font-weight: 800;
+        white-space: nowrap;
+    }}
+
+    @media (max-width: 760px) {{
+        .selection-heatmap-cell {{
+            min-width: 2.85rem;
+            height: 2rem;
+            font-size: 0.76rem;
+        }}
+    }}
+    </style>
+
+    <div class="selection-heatmap-card">
+        <div class="selection-heatmap-title">{escape(title)}</div>
+        <div class="selection-heatmap-subtitle">{escape(subtitle)}</div>
+        <div class="selection-heatmap-scroll">
+            <table class="selection-heatmap-table">
+                <thead>
+                    <tr>
+                        <th></th>
+                        {month_headers}
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(rows_html)}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
+
+def render_selection_heatmaps(monthly_heatmap_detail: pd.DataFrame):
+    st.markdown("#### 评选热图")
+    st.caption(
+        "颜色越深，数值越高。这里看的是每个人在所选月份里的逐月表现，"
+        "比单纯排行榜更容易看出稳定性和结构。"
+    )
+
+    if monthly_heatmap_detail.empty:
+        st.info("暂无可展示的热图数据。")
+        return
+
+    row1_col1, row1_col2 = st.columns(2)
+
+    with row1_col1:
+        render_selection_metric_heatmap(
+            monthly_heatmap_detail,
+            "月有效运动次数",
+            "有效运动次数 × 人",
+            "真正计入目标的有效次数；散步 / 一万步会按半次规则折算。",
+        )
+
+    with row1_col2:
+        render_selection_metric_heatmap(
+            monthly_heatmap_detail,
+            "月运动次数",
+            "总运动次数 × 人",
+            "所有打卡记录次数；用于观察参与频率，但不作为主要评选项。",
+        )
+
+    row2_col1, row2_col2 = st.columns(2)
+
+    with row2_col1:
+        render_selection_metric_heatmap(
+            monthly_heatmap_detail,
+            "月运动时长",
+            "总运动时长 × 人",
+            "每人每月累计运动分钟数。",
+        )
+
+    with row2_col2:
+        render_selection_metric_heatmap(
+            monthly_heatmap_detail,
+            "月度达标",
+            "是否达标 × 人",
+            "每人每月是否达到本月目标。",
+            is_boolean=True,
+        )
 
 
 
@@ -2487,6 +2802,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
     progress_eligible = data["progress_eligible"]
     below_50 = data["below_50"]
     monthly_detail = data["monthly_detail"]
+    monthly_heatmap_detail = data.get("monthly_heatmap_detail", monthly_detail)
 
     selected_label = "、".join(_selection_month_label(x) for x in data["selected_months"])
 
@@ -2695,6 +3011,11 @@ def render_selection_board(df_all: pd.DataFrame, today):
             ].copy()
             view["总达标率"] = view["总达标率"].map(lambda x: f"{float(x):.1f}%")
             render_blue_table(view, use_container_width=True, hide_index=True)
+
+
+
+    st.divider()
+    render_selection_heatmaps(monthly_heatmap_detail)
 
 
 
