@@ -566,7 +566,12 @@ def join_activity_types_with_primary(values, primary_activity_type: str) -> str:
 
 
 def is_half_credit_primary_activity(value) -> bool:
-    return get_primary_activity_type(value) in HALF_CREDIT_ACTIVITY_TYPES
+    activity_types = split_activity_types(value)
+
+    if not activity_types:
+        return False
+
+    return all(item in HALF_CREDIT_ACTIVITY_TYPES for item in activity_types)
 
 
 def format_goal_credit(value) -> str:
@@ -1698,13 +1703,19 @@ tab_submit, tab_dashboard, tab_goal, tab_selection, tab_diary, tab_gallery, tab_
 with tab_submit:
     st.subheader("今天运动了么？")
 
+    submit_success_message = st.session_state.pop("submit_success_message", None)
+
+    if submit_success_message:
+        st.success(submit_success_message)
+
     if hasattr(st, "popover"):
         with st.popover("查看打卡规则"):
             st.markdown(
                 f"""
                 - 可以选择多个运动类型。
-                - 需要指定一个主要运动。
-                - 主要运动不少于 **{MIN_SUBMIT_MINUTES} 分钟** 才能提交。
+                - 不再区分主要运动和次要运动。
+                - 一次打卡的总运动时长需要 **不少于 {MIN_SUBMIT_MINUTES} 分钟** 才能提交。
+                - 一天可以提交多次，但每次都要满足总时长要求。
                 - 散步、走够一万步默认按半次有效打卡计入目标。
                 - 2026年5月之前的历史补卡不需要上传照片。
                 - 2026年5月及之后的打卡需要上传截图或照片。
@@ -1712,7 +1723,7 @@ with tab_submit:
                 """
             )
     else:
-        st.caption(f"主要运动不少于 {MIN_SUBMIT_MINUTES} 分钟才可提交。")
+        st.caption(f"每次打卡总时长不少于 {MIN_SUBMIT_MINUTES} 分钟才可提交。")
 
     members = list(st.secrets.get("MEMBERS", []))
 
@@ -1755,35 +1766,8 @@ with tab_submit:
     if activity_types is None:
         activity_types = []
 
-    if activity_types:
-        if hasattr(st, "segmented_control"):
-            primary_activity_type = st.segmented_control(
-                "主要运动",
-                activity_types,
-                default=activity_types[0],
-                help="主要运动只能从已选择的运动类型中选择，且必须不少于最低分钟数。",
-                key="submit_primary_activity_type",
-            )
-        else:
-            primary_activity_type = st.selectbox(
-                "主要运动",
-                activity_types,
-                help="主要运动只能从已选择的运动类型中选择，且必须不少于最低分钟数。",
-                key="submit_primary_activity_type",
-            )
-    else:
-        primary_activity_type = ""
+    if not activity_types:
         st.info("请选择至少一种运动类型。")
-
-    primary_duration_min = st.number_input(
-        "主要运动时长（分钟）",
-        min_value=MIN_SUBMIT_MINUTES,
-        max_value=600,
-        value=MIN_SUBMIT_MINUTES,
-        step=5,
-        help=f"主要运动必须至少 {MIN_SUBMIT_MINUTES} 分钟。",
-        key="submit_primary_duration_min",
-    )
 
     duration_min = st.number_input(
         "总运动时长（分钟）",
@@ -1791,7 +1775,7 @@ with tab_submit:
         max_value=600,
         value=MIN_SUBMIT_MINUTES,
         step=5,
-        help="填写这次运动的总时长，例如 30 分钟爬坡 + 10 分钟力量训练，就填 40。",
+        help=f"填写这次打卡的总时长。一次可以包含多种运动，但总时长不少于 {MIN_SUBMIT_MINUTES} 分钟。",
         key="submit_duration_min",
     )
 
@@ -1837,23 +1821,16 @@ with tab_submit:
 
     if submitted:
         name = name.strip()
-        activity_type = join_activity_types_with_primary(
-            activity_types,
-            primary_activity_type,
-        )
+        activity_type = join_activity_types(activity_types)
 
         if not name:
             st.error("姓名不能为空。")
         elif not activity_types:
             st.error("请选择至少一种运动类型。")
-        elif primary_activity_type not in activity_types:
-            st.error("主要运动必须包含在已选择的运动类型里。")
         elif photo_required and uploaded_file is None:
             st.error("2026年5月及之后的打卡需要上传截图或照片。")
-        elif int(primary_duration_min) < MIN_SUBMIT_MINUTES:
-            st.error(f"主要运动至少需要 {MIN_SUBMIT_MINUTES} 分钟。")
-        elif int(duration_min) < int(primary_duration_min):
-            st.error("总运动时长不能小于主要运动时长。")
+        elif int(duration_min) < MIN_SUBMIT_MINUTES:
+            st.error(f"每次打卡总时长不少于 {MIN_SUBMIT_MINUTES} 分钟。")
         else:
             try:
                 file_info = None
@@ -1879,7 +1856,8 @@ with tab_submit:
 
                 load_checkins.clear()
 
-                st.success("记录好了，辛苦！")
+                st.session_state["submit_success_message"] = "记录好了，辛苦！"
+                st.rerun()
 
             except Exception as e:
                 st.error("提交失败。")
