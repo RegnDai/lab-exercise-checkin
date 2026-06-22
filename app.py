@@ -316,6 +316,8 @@ ACTIVITY_TYPES = [
     "跑步",
     "爬坡",
     "游泳",
+    "浮潜",
+    "桨板",
     "骑行",
     "康复训练",
     "散步",
@@ -3194,6 +3196,10 @@ def _activity_emoji(activity_type: str) -> str:
         return "💪"
     if any(x in joined for x in ["散步", "走够一万步", "徒步", "登山"]):
         return "🚶"
+    if any(x in joined for x in ["浮潜"]):
+        return "🤿"
+    if any(x in joined for x in ["桨板"]):
+        return "🏄"
     if any(x in joined for x in ["游泳"]):
         return "🏊"
     if any(x in joined for x in ["骑行"]):
