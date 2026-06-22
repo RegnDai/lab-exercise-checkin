@@ -2069,14 +2069,19 @@ with tab_submit:
         activity_type = join_activity_types(activity_types)
 
         if not name:
+            st.session_state["submit_in_progress"] = False
             st.error("姓名不能为空。")
         elif not activity_types:
+            st.session_state["submit_in_progress"] = False
             st.error("请选择至少一种运动类型。")
         elif custom_mood_incomplete:
+            st.session_state["submit_in_progress"] = False
             st.error("自定义心情需要同时填写 emoji 和状态文字。")
         elif photo_required and uploaded_file is None:
+            st.session_state["submit_in_progress"] = False
             st.error("2026年5月及之后的打卡需要上传截图或照片。")
         elif int(duration_min) < MIN_SUBMIT_MINUTES:
+            st.session_state["submit_in_progress"] = False
             st.error(f"每次打卡总时长不少于 {MIN_SUBMIT_MINUTES} 分钟。")
         else:
             try:
