@@ -2349,7 +2349,7 @@ def make_selection_tables(
         ascending=False,
     ).astype(int)
 
-    summary["总次数排名"] = summary["总运动次数"].rank(
+    summary["有效次数排名"] = summary["有效运动次数"].rank(
         method="min",
         ascending=False,
     ).astype(int)
@@ -2378,19 +2378,19 @@ def make_selection_tables(
             "统计月份数",
             "总达标率",
             "总时长排名",
-            "总次数排名",
+            "有效次数排名",
             "达标率排名",
             "满勤候选",
             "进步展示资格",
         ]
     ].sort_values(
-        ["总达标率", "总运动时长", "总运动次数"],
+        ["总达标率", "有效运动次数", "总运动时长"],
         ascending=False,
     )
 
     metric_specs = [
         ("总运动时长", "总运动时长", "总时长排名"),
-        ("总运动次数", "总运动次数", "总次数排名"),
+        ("有效运动次数", "有效运动次数", "有效次数排名"),
         ("总达标率", "总达标率", "达标率排名"),
     ]
 
@@ -2502,6 +2502,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
             metric_col,
             rank_col,
             "总运动时长",
+            "有效运动次数",
             "总运动次数",
             "总达标率",
             "达标月份数",
@@ -2515,6 +2516,9 @@ def render_selection_board(df_all: pd.DataFrame, today):
             .loc[:, cols]
             .copy()
         )
+
+        if "有效运动次数" in out.columns:
+            out["有效运动次数"] = out["有效运动次数"].apply(format_goal_credit)
 
         if "总达标率" in out.columns:
             out["总达标率"] = out["总达标率"].map(lambda x: f"{float(x):.1f}%")
@@ -2534,8 +2538,8 @@ def render_selection_board(df_all: pd.DataFrame, today):
             render_blue_table(top_time, use_container_width=True, hide_index=True)
 
     with rank_col2:
-        st.markdown("##### 总运动次数前三")
-        top_count = _top_three("总运动次数", "总次数排名")
+        st.markdown("##### 有效运动次数前三")
+        top_count = _top_three("有效运动次数", "有效次数排名")
         if top_count.empty:
             st.info("暂无候选。")
         else:
@@ -2557,7 +2561,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
 
     with selection_tab1:
         st.caption(
-            "三项评选涉及总运动时长、总运动次数、总达标率。"
+            "三项评选涉及总运动时长、有效运动次数、总达标率。"
             "同一成员如进入多个项目，最终建议人工确认。"
         )
 
@@ -2569,7 +2573,11 @@ def render_selection_board(df_all: pd.DataFrame, today):
             candidate_view["指标值"] = candidate_view.apply(
                 lambda row: f"{float(row['指标值']):.1f}%"
                 if row["评选指标"] == "总达标率"
-                else row["指标值"],
+                else (
+                    format_goal_credit(row["指标值"])
+                    if row["评选指标"] == "有效运动次数"
+                    else row["指标值"]
+                ),
                 axis=1,
             )
             render_blue_table(candidate_view, use_container_width=True, hide_index=True)
@@ -2582,7 +2590,11 @@ def render_selection_board(df_all: pd.DataFrame, today):
             recommended_view["指标值"] = recommended_view.apply(
                 lambda row: f"{float(row['指标值']):.1f}%"
                 if row["评选指标"] == "总达标率"
-                else row["指标值"],
+                else (
+                    format_goal_credit(row["指标值"])
+                    if row["评选指标"] == "有效运动次数"
+                    else row["指标值"]
+                ),
                 axis=1,
             )
             render_blue_table(recommended_view, use_container_width=True, hide_index=True)
