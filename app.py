@@ -325,6 +325,7 @@ ACTIVITY_TYPES = [
     "徒步",
     "登山",
     "跳绳",
+    "呼啦圈",
     "爬楼",
     "椭圆机",
     "划船机",
@@ -566,6 +567,44 @@ def join_activity_types_with_primary(values, primary_activity_type: str) -> str:
         f"{item}{PRIMARY_ACTIVITY_SUFFIX}" if item == primary else item
         for item in types
     )
+
+
+
+def make_submit_fingerprint(
+    name,
+    activity_date,
+    activity_types,
+    duration_min,
+    mood_key,
+    note,
+    uploaded_file,
+) -> str:
+    """
+    Build a short fingerprint for the current submit payload.
+    This prevents accidental repeated clicks from inserting the same record again.
+    """
+    photo_identity = "no-photo"
+
+    if uploaded_file is not None:
+        photo_identity = (
+            f"{getattr(uploaded_file, 'name', '')}:"
+            f"{getattr(uploaded_file, 'size', '')}"
+        )
+
+    raw = "\t".join(
+        [
+            str(name).strip(),
+            str(activity_date),
+            join_activity_types(activity_types),
+            str(int(duration_min)),
+            str(mood_key or ""),
+            str(note or "").strip(),
+            photo_identity,
+        ]
+    )
+
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
 
 
 def is_half_credit_primary_activity(value) -> bool:
@@ -1841,7 +1880,24 @@ with tab_submit:
     submit_success_message = st.session_state.pop("submit_success_message", None)
 
     if submit_success_message:
-        st.success(submit_success_message)
+        st.session_state["submit_recently_completed"] = True
+
+        st.success(
+            f"✅ {submit_success_message} 页面已经刷新。"
+            "为了避免重复提交，同一条内容会被临时锁定。"
+        )
+
+        if hasattr(st, "toast"):
+            st.toast("✅ 已提交，这条记录已经写入。", icon="✅")
+
+        if hasattr(st, "dialog"):
+            @st.dialog("✅ 已提交")
+            def _submit_done_dialog():
+                st.success("这条运动记录已经提交成功。")
+                st.write("同一条内容已经被临时锁定，防止连续点击造成重复提交。")
+                st.caption("修改姓名、日期、运动类型、时长、心情、碎碎念或照片后，可以继续提交新记录。")
+
+            _submit_done_dialog()
 
     if hasattr(st, "popover"):
         with st.popover("查看打卡规则"):
@@ -1972,15 +2028,42 @@ with tab_submit:
         key="submit_note",
     )
 
+    submit_fingerprint = make_submit_fingerprint(
+        name,
+        activity_date,
+        activity_types,
+        duration_min,
+        mood_key if "mood_key" in locals() else "",
+        note,
+        uploaded_file,
+    )
+
+    submit_locked = (
+        st.session_state.get("submit_recently_completed", False)
+        and st.session_state.get("last_submit_fingerprint") == submit_fingerprint
+    )
+
+    if submit_locked:
+        st.warning("✅ 刚才这条记录已经提交成功。为了防止重复提交，请修改任意内容后再提交新记录。")
+
     submitted = st.button(
         "提交打卡",
-        disabled=not activity_types,
+        disabled=not activity_types or submit_locked or st.session_state.get("submit_in_progress", False),
         type="primary",
         key="submit_checkin_button",
         use_container_width=True,
     )
 
     if submitted:
+        if (
+            st.session_state.get("submit_recently_completed", False)
+            and st.session_state.get("last_submit_fingerprint") == submit_fingerprint
+        ):
+            st.warning("这条记录刚才已经提交过了，已阻止重复提交。")
+            st.stop()
+
+        st.session_state["submit_in_progress"] = True
+
         name = name.strip()
         activity_type = join_activity_types(activity_types)
 
@@ -2019,10 +2102,14 @@ with tab_submit:
 
                 load_checkins.clear()
 
+                st.session_state["last_submit_fingerprint"] = submit_fingerprint
+                st.session_state["submit_recently_completed"] = True
+                st.session_state["submit_in_progress"] = False
                 st.session_state["submit_success_message"] = "记录好了，辛苦！"
                 st.rerun()
 
             except Exception as e:
+                st.session_state["submit_in_progress"] = False
                 st.error("提交失败。")
                 st.exception(e)
 
@@ -2623,6 +2710,8 @@ def _activity_emoji(activity_type: str) -> str:
         return "🚴"
     if any(x in joined for x in ["瑜伽", "普拉提", "舞蹈", "健身操"]):
         return "🧘"
+    if any(x in joined for x in ["呼啦圈"]):
+        return "⭕"
     if any(x in joined for x in ["篮球", "足球", "排球", "羽毛球", "乒乓球", "网球"]):
         return "🏀"
 
