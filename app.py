@@ -2487,6 +2487,97 @@ def make_selection_tables(
             {True: "是", False: "否"}
         )
 
+    if df_period.empty:
+        diversity_board = pd.DataFrame(
+            columns=[
+                "多样性排名",
+                "姓名",
+                "运动种类数",
+                "运动类型",
+                "有效运动次数",
+                "总运动次数",
+                "总运动时长",
+                "总达标率",
+            ]
+        )
+    else:
+        diversity_records = explode_activity_records(df_period)
+
+        if diversity_records.empty:
+            diversity_board = pd.DataFrame(
+                columns=[
+                    "多样性排名",
+                    "姓名",
+                    "运动种类数",
+                    "运动类型",
+                    "有效运动次数",
+                    "总运动次数",
+                    "总运动时长",
+                    "总达标率",
+                ]
+            )
+        else:
+            diversity_board = (
+                diversity_records.groupby("name")
+                .agg(
+                    运动种类数=("activity_type", "nunique"),
+                    运动类型=(
+                        "activity_type",
+                        lambda values: ACTIVITY_TYPE_SEPARATOR.join(
+                            sorted(
+                                {
+                                    str(value).strip()
+                                    for value in values
+                                    if str(value).strip()
+                                }
+                            )
+                        ),
+                    ),
+                )
+                .reset_index()
+                .rename(columns={"name": "姓名"})
+            )
+
+            summary_for_diversity = summary[
+                [
+                    "姓名",
+                    "有效运动次数",
+                    "总运动次数",
+                    "总运动时长",
+                    "总达标率",
+                ]
+            ].copy()
+
+            diversity_board = diversity_board.merge(
+                summary_for_diversity,
+                on="姓名",
+                how="left",
+            ).fillna(
+                {
+                    "有效运动次数": 0.0,
+                    "总运动次数": 0,
+                    "总运动时长": 0,
+                    "总达标率": 0.0,
+                }
+            )
+
+            diversity_board["运动种类数"] = diversity_board["运动种类数"].astype(int)
+            diversity_board["总运动次数"] = diversity_board["总运动次数"].astype(int)
+            diversity_board["总运动时长"] = diversity_board["总运动时长"].astype(int)
+            diversity_board["有效运动次数"] = diversity_board["有效运动次数"].astype(float)
+            diversity_board["总达标率"] = diversity_board["总达标率"].astype(float)
+
+            diversity_board = diversity_board.sort_values(
+                ["运动种类数", "有效运动次数", "总运动时长", "总运动次数"],
+                ascending=False,
+            ).reset_index(drop=True)
+
+            diversity_board.insert(
+                0,
+                "多样性排名",
+                range(1, len(diversity_board) + 1),
+            )
+
     return {
         "summary": summary,
         "selected_candidates": selected_candidates,
@@ -2496,6 +2587,7 @@ def make_selection_tables(
         "below_50": below_50,
         "monthly_detail": monthly_detail,
         "monthly_heatmap_detail": monthly_heatmap_detail,
+        "diversity_board": diversity_board,
         "target_checkins": target_checkins,
         "target_minutes": target_minutes,
         "selected_months": selected_months,
@@ -2842,6 +2934,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
     below_50 = data["below_50"]
     monthly_detail = data["monthly_detail"]
     monthly_heatmap_detail = data.get("monthly_heatmap_detail", monthly_detail)
+    diversity_board = data.get("diversity_board", pd.DataFrame())
 
     selected_label = "、".join(_selection_month_label(x) for x in data["selected_months"])
 
@@ -2907,6 +3000,31 @@ def render_selection_board(df_all: pd.DataFrame, today):
             st.info("暂无候选。")
         else:
             render_blue_table(top_rate, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    st.markdown("#### 运动多样性排行榜")
+    st.caption(
+        "按所选月份内不同运动类型数量排序。"
+        "一次打卡如果选择多个运动类型，会分别计入多样性统计。"
+    )
+
+    if diversity_board.empty:
+        st.info("当前还没有可展示的运动多样性数据。")
+    else:
+        diversity_view = diversity_board.copy()
+
+        if "有效运动次数" in diversity_view.columns:
+            diversity_view["有效运动次数"] = diversity_view["有效运动次数"].apply(format_goal_credit)
+
+        if "总达标率" in diversity_view.columns:
+            diversity_view["总达标率"] = diversity_view["总达标率"].map(lambda x: f"{float(x):.1f}%")
+
+        render_blue_table(
+            diversity_view,
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.divider()
 
