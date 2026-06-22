@@ -1880,6 +1880,14 @@ with tab_submit:
 
     submit_success_message = st.session_state.pop("submit_success_message", None)
 
+    if "submit_form_version" not in st.session_state:
+        st.session_state["submit_form_version"] = 0
+
+    if st.session_state.pop("reset_submit_activity_types", False):
+        for key in list(st.session_state.keys()):
+            if str(key) == "submit_activity_types" or str(key).startswith("submit_activity_types_"):
+                st.session_state.pop(key, None)
+
     if submit_success_message:
         st.session_state["submit_recently_completed"] = True
 
@@ -1937,6 +1945,8 @@ with tab_submit:
     else:
         st.caption("历史补卡：2026年5月之前的记录不需要上传照片。")
 
+    activity_types_key = f"submit_activity_types_{st.session_state['submit_form_version']}"
+
     if hasattr(st, "pills"):
         activity_types = st.pills(
             "运动类型（可多选）",
@@ -1944,7 +1954,7 @@ with tab_submit:
             selection_mode="multi",
             default=[],
             help="一次运动包含多种内容时可以多选，例如：爬坡、力量训练。",
-            key="submit_activity_types",
+            key=activity_types_key,
         )
     else:
         activity_types = st.multiselect(
@@ -1952,7 +1962,7 @@ with tab_submit:
             ACTIVITY_TYPES,
             default=[],
             help="一次运动包含多种内容时可以多选，例如：爬坡、力量训练。",
-            key="submit_activity_types",
+            key=activity_types_key,
         )
 
     if activity_types is None:
@@ -2111,6 +2121,8 @@ with tab_submit:
                 st.session_state["last_submit_fingerprint"] = submit_fingerprint
                 st.session_state["submit_recently_completed"] = True
                 st.session_state["submit_in_progress"] = False
+                st.session_state["submit_form_version"] = st.session_state.get("submit_form_version", 0) + 1
+                st.session_state["reset_submit_activity_types"] = True
                 st.session_state["submit_success_message"] = "记录好了，辛苦！"
                 st.rerun()
 
