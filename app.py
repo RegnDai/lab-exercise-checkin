@@ -338,6 +338,7 @@ ACTIVITY_TYPES = [
     "足球",
     "排球",
     "网球",
+    "台球",
     "舞蹈",
     "健身操",
     "其他",
@@ -3208,6 +3209,8 @@ def _activity_emoji(activity_type: str) -> str:
         return "🧘"
     if any(x in joined for x in ["呼啦圈"]):
         return "⭕"
+    if any(x in joined for x in ["台球"]):
+        return "🎱"
     if any(x in joined for x in ["篮球", "足球", "排球", "羽毛球", "乒乓球", "网球"]):
         return "🏀"
 
@@ -4779,9 +4782,11 @@ with tab_admin:
             )
 
         with filter_col2:
-            all_activity_types = sorted(
-                df["activity_type"].dropna().astype(str).unique().tolist()
-            )
+            all_activity_types = sorted({
+                activity
+                for value in df["activity_type"].dropna().astype(str).tolist()
+                for activity in split_activity_types(value)
+            })
             selected_types = st.multiselect(
                 "运动类型",
                 all_activity_types,
@@ -4807,7 +4812,12 @@ with tab_admin:
             filtered_df = filtered_df[filtered_df["name"].isin(selected_names)]
 
         if selected_types:
-            filtered_df = filtered_df[filtered_df["activity_type"].isin(selected_types)]
+            selected_type_set = set(selected_types)
+            filtered_df = filtered_df[
+                filtered_df["activity_type"].apply(
+                    lambda value: bool(selected_type_set & set(split_activity_types(value)))
+                )
+            ]
 
         if isinstance(selected_date_range, tuple) and len(selected_date_range) == 2:
             start_date, end_date = selected_date_range
@@ -4999,10 +5009,16 @@ with tab_admin:
                 name_options = [current_name] if current_name else [""]
 
             current_activity = _clean_text(selected_row.get("activity_type"))
-            activity_options = list(ACTIVITY_TYPES)
+            current_activity_types = split_activity_types(current_activity)
 
-            if current_activity and current_activity not in activity_options:
-                activity_options = [current_activity] + activity_options
+            activity_options = list(ACTIVITY_TYPES)
+            extra_activity_options = [
+                activity
+                for activity in current_activity_types
+                if activity and activity not in activity_options
+            ]
+
+            activity_options = extra_activity_options + activity_options
 
             current_date = pd.to_datetime(
                 selected_row.get("activity_date"),
@@ -5029,12 +5045,15 @@ with tab_admin:
                     value=current_date,
                 )
 
-                edited_activity = st.selectbox(
-                    "运动类型",
+                edited_activities = st.multiselect(
+                    "运动类型（可多选）",
                     activity_options,
-                    index=activity_options.index(current_activity)
-                    if current_activity in activity_options
-                    else 0,
+                    default=[
+                        activity
+                        for activity in current_activity_types
+                        if activity in activity_options
+                    ],
+                    help="可以选择多个运动类型，保存后会用顿号连接。",
                 )
 
                 edited_duration = st.number_input(
@@ -5060,12 +5079,16 @@ with tab_admin:
 
                 save_clicked = st.form_submit_button("保存修改")
 
+            if save_clicked and not edited_activities:
+                st.error("请选择至少一种运动类型。")
+                st.stop()
+
             if save_clicked:
                 try:
                     update_row = {
                         "name": edited_name.strip(),
                         "activity_date": edited_date.isoformat(),
-                        "activity_type": edited_activity,
+                        "activity_type": join_activity_types(edited_activities),
                         "duration_min": int(edited_duration),
                         "note": edited_note.strip() or None,
                     }
