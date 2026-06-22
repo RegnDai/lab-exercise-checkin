@@ -703,7 +703,7 @@ def _format_one_mood_key(mood_key) -> str:
 
     if mood_key.startswith(CUSTOM_MOOD_PREFIX):
         custom_text = mood_key.removeprefix(CUSTOM_MOOD_PREFIX).strip()
-        return custom_text or "未记录"
+        return custom_text or "未知的心情～"
 
     mood = MOOD_LOOKUP.get(mood_key, None)
 
@@ -717,13 +717,13 @@ def format_mood_key(mood_key) -> str:
     mood_keys = split_mood_keys(mood_key)
 
     if not mood_keys:
-        return "未记录"
+        return "未知的心情～"
 
     return MOOD_SEPARATOR.join(
         _format_one_mood_key(key)
         for key in mood_keys
         if _format_one_mood_key(key)
-    ) or "未记录"
+    ) or "未知的心情～"
 
 
 def _one_mood_emoji(mood_key) -> str:
@@ -765,7 +765,7 @@ def mood_label(mood_key) -> str:
     mood_keys = split_mood_keys(mood_key)
 
     if not mood_keys:
-        return "未记录"
+        return "未知的心情～"
 
     labels = []
 
@@ -781,7 +781,7 @@ def mood_label(mood_key) -> str:
         if label and label not in labels:
             labels.append(label)
 
-    return MOOD_SEPARATOR.join(labels) if labels else "未记录"
+    return MOOD_SEPARATOR.join(labels) if labels else "未知的心情～"
 
 
 
