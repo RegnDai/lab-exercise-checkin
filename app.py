@@ -277,7 +277,7 @@ PHOTO_REQUIRED_START_DATE = datetime(2026, 5, 1).date()
 
 ACTIVITY_TYPE_SEPARATOR = "、"
 PRIMARY_ACTIVITY_SUFFIX = "（主要）"
-DEFAULT_HALF_CREDIT_ACTIVITY_TYPES = ["散步", "走够一万步", "康复训练"]
+DEFAULT_HALF_CREDIT_ACTIVITY_TYPES = ["散步", "走够一万步", "康复训练", "台球"]
 
 configured_half_credit_types = st.secrets.get(
     "HALF_CREDIT_ACTIVITY_TYPES",
@@ -1932,7 +1932,7 @@ with tab_submit:
                 - 不再区分主要运动和次要运动。
                 - 一次打卡的总运动时长需要 **不少于 {MIN_SUBMIT_MINUTES} 分钟** 才能提交。
                 - 一天可以提交多次，但每次都要满足总时长要求。
-                - 散步、走够一万步、康复训练默认按半次有效打卡计入目标，最多计入 8 条，即 4 次有效运动。
+                - 散步、走够一万步、康复训练、台球默认按半次有效打卡计入目标，最多计入 8 条，即 4 次有效运动。
                 - 2026年5月之前的历史补卡不需要上传照片。
                 - 2026年5月及之后的打卡需要上传截图或照片。
                 - 上传图片会自动压缩，不需要自己处理。
@@ -2891,7 +2891,7 @@ def render_selection_heatmaps(monthly_heatmap_detail: pd.DataFrame):
             monthly_heatmap_detail,
             "月有效运动次数",
             "有效运动次数 × 人",
-            "真正计入目标的有效次数；散步 / 一万步 / 康复训练会按半次规则折算。",
+            "真正计入目标的有效次数；散步 / 一万步 / 康复训练 / 台球会按半次规则折算。",
         )
 
     with row1_col2:
