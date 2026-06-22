@@ -1971,15 +1971,36 @@ with tab_submit:
     if not activity_types:
         st.info("请选择至少一种运动类型。")
 
-    duration_min = st.number_input(
-        "总运动时长（分钟）",
-        min_value=MIN_SUBMIT_MINUTES,
-        max_value=600,
-        value=MIN_SUBMIT_MINUTES,
-        step=5,
-        help=f"填写这次打卡的总时长。一次可以包含多种运动，但总时长不少于 {MIN_SUBMIT_MINUTES} 分钟。",
-        key="submit_duration_min",
+    selected_submit_activity_types = split_activity_types(activity_types)
+    steps_only_activity = selected_submit_activity_types == ["走够一万步"]
+    duration_widget_key = (
+        f"submit_duration_min_{st.session_state.get('submit_form_version', 0)}_"
+        f"{'steps_only' if steps_only_activity else 'normal'}"
     )
+
+    if steps_only_activity:
+        st.info("只选择“走够一万步”时，系统固定计为 30 分钟。")
+
+        duration_min = st.number_input(
+            "总运动时长（分钟）",
+            min_value=30,
+            max_value=30,
+            value=30,
+            step=1,
+            help="走够一万步单独提交时，时长固定为 30 分钟。",
+            key=duration_widget_key,
+            disabled=True,
+        )
+    else:
+        duration_min = st.number_input(
+            "总运动时长（分钟）",
+            min_value=MIN_SUBMIT_MINUTES,
+            max_value=600,
+            value=MIN_SUBMIT_MINUTES,
+            step=5,
+            help=f"填写这次打卡的总时长。一次可以包含多种运动，但总时长不少于 {MIN_SUBMIT_MINUTES} 分钟。",
+            key=duration_widget_key,
+        )
 
     uploaded_file = st.file_uploader(
         f"上传截图或照片（2026年5月及之后必填；原图不超过 {MAX_SOURCE_UPLOAD_MB} MB，系统会自动压缩）",
@@ -3341,6 +3362,13 @@ def _clean_diary_text(value) -> str:
     return text_value
 
 
+def format_diary_mood_key(mood_key) -> str:
+    if not split_mood_keys(mood_key):
+        return "未知的心情～"
+
+    return format_mood_key(mood_key)
+
+
 def _build_day_tooltip(day_records: pd.DataFrame) -> str:
     if day_records.empty:
         return ""
@@ -3351,7 +3379,7 @@ def _build_day_tooltip(day_records: pd.DataFrame) -> str:
         activity = escape(_format_diary_activity(_clean_diary_text(record.get("activity_type", ""))))
         minutes = escape(_clean_diary_text(record.get("duration_min", "")))
         note = escape(_clean_diary_text(record.get("note", "")))
-        mood = escape(format_mood_key(record.get("mood_key")))
+        mood = escape(format_diary_mood_key(record.get("mood_key")))
 
         item = f"<div class='diary-tip-item'><b>{mood}</b> ｜ {activity} ｜ {minutes} 分钟"
 
