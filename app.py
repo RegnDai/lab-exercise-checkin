@@ -358,6 +358,26 @@ ACTIVITY_TYPES = [
 ]
 
 
+MEMBER_GENDER_MAP = {
+    "王平": "女",
+    "李城炫": "男",
+    "刘新新": "女",
+    "赵阳": "男",
+    "戴雨池": "男",
+    "马春梅": "女",
+    "陈雨晴": "女",
+    "蔡远荣": "男",
+    "陈飞帆": "女",
+    "张函齐": "男",
+    "郑盈颖": "女",
+    "杨文威": "男",
+}
+
+FEMALE_MONTHLY_TARGET_CHECKINS = int(
+    st.secrets.get("FEMALE_MONTHLY_TARGET_CHECKINS", 7)
+)
+
+
 @st.cache_resource
 def get_supabase():
     return create_client(
@@ -1354,13 +1374,19 @@ def make_energy_pool_stats(df_month: pd.DataFrame) -> dict:
 
     member_count = len(active_members)
 
-    target_checkins = member_count * target_checkins_per_person
+    member_target_map = {
+        member: get_member_monthly_target_checkins(member, target_checkins_per_person)
+        for member in active_members
+    }
+
+    target_checkins = int(sum(member_target_map.values()))
     target_energy_minutes = target_checkins * target_minutes_per_checkin
 
     if df_month.empty or member_count == 0:
         return {
             "active_members": active_members,
             "member_count": member_count,
+            "member_target_map": member_target_map,
             "target_checkins": target_checkins,
             "target_energy_minutes": target_energy_minutes,
             "actual_checkins": 0,
@@ -1427,6 +1453,10 @@ def make_energy_pool_contribution_table(df_goal: pd.DataFrame) -> pd.DataFrame:
     if df_goal.empty:
         return pd.DataFrame({
             "姓名": active_members,
+            "月目标次数": [
+                get_member_monthly_target_checkins(name)
+                for name in active_members
+            ],
             "能量贡献": [0] * len(active_members),
             "实际运动分钟": [0] * len(active_members),
             "打卡次数": [0] * len(active_members),
@@ -1443,6 +1473,7 @@ def make_energy_pool_contribution_table(df_goal: pd.DataFrame) -> pd.DataFrame:
     )
 
     all_members = pd.DataFrame({"姓名": active_members})
+    all_members["月目标次数"] = all_members["姓名"].apply(get_member_monthly_target_checkins)
 
     out = (
         all_members.merge(out, on="姓名", how="left")
@@ -1453,6 +1484,7 @@ def make_energy_pool_contribution_table(df_goal: pd.DataFrame) -> pd.DataFrame:
         })
     )
 
+    out["月目标次数"] = out["月目标次数"].astype(int)
     out["能量贡献"] = out["能量贡献"].astype(int)
     out["实际运动分钟"] = out["实际运动分钟"].astype(int)
     out["打卡次数"] = out["打卡次数"].astype(int)
@@ -1627,12 +1659,34 @@ def get_monthly_goal_settings() -> tuple[int, int]:
     Monthly goal rule.
 
     Default:
-    - 7 qualifying sessions per month
+    - 8 qualifying sessions per month for standard target
     - each qualifying session must be >= 30 minutes
     """
     target_checkins = int(st.secrets.get("MONTHLY_TARGET_CHECKINS_PER_PERSON", 8))
     target_minutes = int(st.secrets.get("MONTHLY_TARGET_MINUTES_PER_CHECKIN", 30))
     return target_checkins, target_minutes
+
+
+def get_member_monthly_target_checkins(name, default_target_checkins: int | None = None) -> int:
+    if default_target_checkins is None:
+        default_target_checkins, _ = get_monthly_goal_settings()
+
+    clean_name = str(name).strip()
+    gender = str(MEMBER_GENDER_MAP.get(clean_name, "")).strip()
+
+    if gender == "女":
+        return int(FEMALE_MONTHLY_TARGET_CHECKINS)
+
+    return int(default_target_checkins)
+
+
+def get_monthly_target_rule_text() -> str:
+    default_target_checkins, _ = get_monthly_goal_settings()
+
+    if int(default_target_checkins) == int(FEMALE_MONTHLY_TARGET_CHECKINS):
+        return f"每人每月 {default_target_checkins} 次"
+
+    return f"男生每月 {default_target_checkins} 次，女生每月 {FEMALE_MONTHLY_TARGET_CHECKINS} 次"
 
 
 
@@ -1641,11 +1695,15 @@ def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFram
     target_checkins, target_minutes = get_monthly_goal_settings()
 
     base = pd.DataFrame({"姓名": active_members})
+    base["月目标次数"] = base["姓名"].apply(
+        lambda name: get_member_monthly_target_checkins(name, target_checkins)
+    )
 
     if not active_members:
         return pd.DataFrame(
             columns=[
                 "姓名",
+                "月目标次数",
                 "有效运动次数",
                 "总打卡次数",
                 "总运动分钟",
@@ -1680,6 +1738,8 @@ def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFram
             }
         )
 
+    out["月目标次数"] = out["月目标次数"].astype(int)
+    out["月目标次数"] = out["月目标次数"].astype(int)
     out["有效运动次数"] = out["有效运动次数"].astype(float)
     out["总打卡次数"] = out["总打卡次数"].astype(int)
     out["总运动分钟"] = out["总运动分钟"].astype(int)
@@ -1687,12 +1747,12 @@ def make_current_month_goal_table(df_month_to_date: pd.DataFrame) -> pd.DataFram
     out["半次运动计入次数"] = out["半次运动计入次数"].astype(float)
 
     out["还差有效运动次数"] = (
-        target_checkins - out["有效运动次数"]
+        out["月目标次数"] - out["有效运动次数"]
     ).clip(lower=0)
 
-    out["达标进度"] = (
-        out["有效运动次数"].apply(format_goal_credit)
-        + f"/{target_checkins}"
+    out["达标进度"] = out.apply(
+        lambda row: f"{format_goal_credit(row['有效运动次数'])}/{int(row['月目标次数'])}",
+        axis=1,
     )
 
     out["本月状态"] = out["还差有效运动次数"].apply(
@@ -1720,6 +1780,7 @@ def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
     columns = [
         "姓名",
         "月份",
+        "月目标次数",
         "有效运动次数",
         "总打卡次数",
         "总运动分钟",
@@ -1744,6 +1805,10 @@ def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
         [active_members, months],
         names=["姓名", "月份"],
     ).to_frame(index=False)
+
+    skeleton["月目标次数"] = skeleton["姓名"].apply(
+        lambda name: get_member_monthly_target_checkins(name, target_checkins)
+    )
 
     if df_all.empty:
         summary = pd.DataFrame(columns=columns[:-2])
@@ -1770,9 +1835,9 @@ def make_monthly_goal_history(df_all: pd.DataFrame, today) -> pd.DataFrame:
     out["半次运动达标记录数"] = out["半次运动达标记录数"].astype(int)
     out["半次运动计入次数"] = out["半次运动计入次数"].astype(float)
 
-    out["是否达标"] = out["有效运动次数"] >= target_checkins
+    out["是否达标"] = out["有效运动次数"] >= out["月目标次数"]
     out["还差有效运动次数"] = (
-        target_checkins - out["有效运动次数"]
+        out["月目标次数"] - out["有效运动次数"]
     ).clip(lower=0)
     out["月份"] = out["月份"].astype(str)
 
@@ -1819,6 +1884,7 @@ def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
         "累计达标率",
         "历史连续达标月数",
         "最长连续达标月数",
+        "本月目标次数",
         "本月有效运动次数",
         "本月还差有效运动次数",
         "本月状态",
@@ -1831,6 +1897,7 @@ def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
     rows = []
 
     for name in active_members:
+        current_target = get_member_monthly_target_checkins(name, target_checkins)
         person = goal_history[goal_history["姓名"] == name].sort_values("月份")
 
         completed = person[person["月份"] < current_month]
@@ -1840,9 +1907,10 @@ def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
 
         if current_row.empty:
             current_valid = 0.0
-            current_remaining = float(target_checkins)
+            current_remaining = float(current_target)
             current_achieved = False
         else:
+            current_target = int(current_row.iloc[0].get("月目标次数", current_target))
             current_valid = float(current_row.iloc[0]["有效运动次数"])
             current_remaining = float(current_row.iloc[0]["还差有效运动次数"])
             current_achieved = bool(current_row.iloc[0]["是否达标"])
@@ -1859,6 +1927,7 @@ def make_goal_streak_table(goal_history: pd.DataFrame, today) -> pd.DataFrame:
                 "累计达标率": f"{achievement_rate:.1f}%",
                 "历史连续达标月数": _ending_true_streak(completed_status),
                 "最长连续达标月数": _longest_true_streak(completed_status),
+                "本月目标次数": current_target,
                 "本月有效运动次数": format_goal_credit(current_valid),
                 "本月还差有效运动次数": format_goal_credit(current_remaining),
                 "本月状态": "✅ 已达标" if current_achieved else "未达标",
@@ -2346,15 +2415,19 @@ def make_selection_tables(
     monthly_grid["月运动次数"] = monthly_grid["月运动次数"].astype(int)
     monthly_grid["月运动时长"] = monthly_grid["月运动时长"].astype(int)
     monthly_grid["月有效运动次数"] = monthly_grid["月有效运动次数"].astype(float)
+    monthly_grid["月目标次数"] = monthly_grid["name"].apply(
+        lambda name: get_member_monthly_target_checkins(name, target_checkins)
+    ).astype(int)
     monthly_grid["半次运动达标记录数"] = monthly_grid["半次运动达标记录数"].astype(int)
     monthly_grid["半次运动计入次数"] = monthly_grid["半次运动计入次数"].astype(float)
-    monthly_grid["月度达标"] = monthly_grid["月有效运动次数"] >= target_checkins
+    monthly_grid["月度达标"] = monthly_grid["月有效运动次数"] >= monthly_grid["月目标次数"]
 
     person_month = (
         monthly_grid.groupby("name", as_index=False)
         .agg(
             达标月份数=("月度达标", "sum"),
             统计月份数=("month", "nunique"),
+            周期目标次数=("月目标次数", "sum"),
         )
         if not monthly_grid.empty
         else pd.DataFrame(
@@ -2362,6 +2435,10 @@ def make_selection_tables(
                 "name": active_members,
                 "达标月份数": [0] * len(active_members),
                 "统计月份数": [len(selected_months)] * len(active_members),
+                "周期目标次数": [
+                    get_member_monthly_target_checkins(name, target_checkins) * len(selected_months)
+                    for name in active_members
+                ],
             }
         )
     )
@@ -2399,6 +2476,7 @@ def make_selection_tables(
                 "半次运动计入次数": 0.0,
                 "达标月份数": 0,
                 "统计月份数": len(selected_months),
+                "周期目标次数": 0,
             }
         )
     )
@@ -2410,8 +2488,7 @@ def make_selection_tables(
     summary["半次运动计入次数"] = summary["半次运动计入次数"].astype(float)
     summary["达标月份数"] = summary["达标月份数"].astype(int)
     summary["统计月份数"] = summary["统计月份数"].astype(int)
-
-    summary["周期目标次数"] = summary["统计月份数"] * target_checkins
+    summary["周期目标次数"] = summary["周期目标次数"].astype(int)
 
     summary["有效次数完成率"] = summary.apply(
         lambda row: (
@@ -2949,7 +3026,7 @@ def render_selection_heatmaps(monthly_heatmap_detail: pd.DataFrame):
             monthly_heatmap_detail,
             "月度达标",
             "是否达标 × 人",
-            "每人每月是否达到本月目标；同一天多次打卡只按一次有效运动计入。",
+            "每人每月是否达到本月目标；女生目标为 7 次，男生按默认目标；同一天多次打卡只按一次有效运动计入。",
             is_boolean=True,
         )
 
@@ -2988,7 +3065,7 @@ def render_selection_board(df_all: pd.DataFrame, today):
 
     st.caption(
         f"当前统计月份：{selected_label}。"
-        f"达标规则：每月 {data['target_checkins']} 次，"
+        f"达标规则：{get_monthly_target_rule_text()}，"
         f"每次不少于 {data['target_minutes']} 分钟。"
     )
 
@@ -4269,8 +4346,8 @@ with tab_dashboard:
         target_checkins, target_minutes = get_monthly_goal_settings()
 
         st.caption(
-            f"规则：本月完成 {target_checkins} 次有效运动；"
-            f"每次主要运动不少于 {target_minutes} 分钟。"
+            f"规则：{get_monthly_target_rule_text()}；"
+            f"每次运动不少于 {target_minutes} 分钟。"
         )
 
         monthly_goal_table = make_current_month_goal_table(df_month)
@@ -4309,6 +4386,7 @@ with tab_dashboard:
 
         monthly_goal_view = monthly_goal_display.rename(
             columns={
+                "月目标次数": "目标",
                 "有效运动次数": "有效次数",
                 "总打卡次数": "打卡",
                 "总运动分钟": "分钟",
@@ -4368,6 +4446,7 @@ with tab_dashboard:
             history_view["还差有效运动次数"] = history_view["还差有效运动次数"].apply(format_goal_credit)
             history_view = history_view.rename(
                 columns={
+                    "月目标次数": "目标",
                     "有效运动次数": "有效次数",
                     "总打卡次数": "打卡",
                     "总运动分钟": "分钟",
@@ -4564,7 +4643,7 @@ with tab_goal:
 
     st.markdown(
         f"""
-        每人 **{target_checkins_per_person} 次**，每次主要运动 **{target_minutes_per_checkin} 分钟**。  
+        达标次数：**{get_monthly_target_rule_text()}**；每次运动 **{target_minutes_per_checkin} 分钟**。  
         每条记录最多计入 **{energy_credit_cap_min} 分钟**；多出来的时间仍会完整保留在总览里。
         """
     )
