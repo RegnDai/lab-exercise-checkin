@@ -850,13 +850,45 @@ def summarize_goal_credits(
 
     temp = add_goal_credit_columns(df, target_minutes)
 
-    grouped = (
-        temp.groupby(group_cols, as_index=False)
+    if "activity_date" not in temp.columns:
+        return pd.DataFrame(columns=columns)
+
+    day_group_cols = list(group_cols)
+
+    if "activity_date" not in day_group_cols:
+        day_group_cols = day_group_cols + ["activity_date"]
+
+    day_level = (
+        temp.groupby(day_group_cols, as_index=False)
         .agg(
             总打卡次数=("id", "count"),
             总运动分钟=("duration_min", "sum"),
-            普通有效次数=("normal_goal_credit", "sum"),
-            半次运动达标记录数=("half_credit_goal_record", "sum"),
+            普通达标记录数=("normal_goal_credit", "sum"),
+            半次达标记录数原始=("half_credit_goal_record", "sum"),
+        )
+    )
+
+    # New rule:
+    # A person can submit multiple records on the same day,
+    # but the day can only contribute once to effective checkins.
+    #
+    # - Any qualified normal activity on that day => 1 effective checkin.
+    # - If the day only has half-credit activities => 0.5 effective checkin.
+    # - Multiple half-credit records on the same day still only count as 0.5.
+    day_level["普通有效次数"] = (day_level["普通达标记录数"] > 0).astype(float)
+
+    day_level["半次运动达标记录数"] = (
+        (day_level["普通达标记录数"] <= 0)
+        & (day_level["半次达标记录数原始"] > 0)
+    ).astype(int)
+
+    grouped = (
+        day_level.groupby(group_cols, as_index=False)
+        .agg(
+            总打卡次数=("总打卡次数", "sum"),
+            总运动分钟=("总运动分钟", "sum"),
+            普通有效次数=("普通有效次数", "sum"),
+            半次运动达标记录数=("半次运动达标记录数", "sum"),
         )
     )
 
@@ -1931,7 +1963,7 @@ with tab_submit:
                 - 可以选择多个运动类型。
                 - 不再区分主要运动和次要运动。
                 - 一次打卡的总运动时长需要 **不少于 {MIN_SUBMIT_MINUTES} 分钟** 才能提交。
-                - 一天可以提交多次，但每次都要满足总时长要求。
+                - 一天可以提交多次，但同一个人同一天最多只计入 1 次有效运动。
                 - 散步、走够一万步、康复训练、台球默认按半次有效打卡计入目标，最多计入 8 条，即 4 次有效运动。
                 - 2026年5月之前的历史补卡不需要上传照片。
                 - 2026年5月及之后的打卡需要上传截图或照片。
@@ -2891,7 +2923,7 @@ def render_selection_heatmaps(monthly_heatmap_detail: pd.DataFrame):
             monthly_heatmap_detail,
             "月有效运动次数",
             "有效运动次数 × 人",
-            "真正计入目标的有效次数；散步 / 一万步 / 康复训练 / 台球会按半次规则折算。",
+            "真正计入目标的有效次数；同一天最多计入 1 次。散步 / 一万步 / 康复训练 / 台球按半次规则折算。",
         )
 
     with row1_col2:
@@ -2917,7 +2949,7 @@ def render_selection_heatmaps(monthly_heatmap_detail: pd.DataFrame):
             monthly_heatmap_detail,
             "月度达标",
             "是否达标 × 人",
-            "每人每月是否达到本月目标。",
+            "每人每月是否达到本月目标；同一天多次打卡只按一次有效运动计入。",
             is_boolean=True,
         )
 
