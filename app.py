@@ -4275,6 +4275,76 @@ def render_random_audit_board(df_all: pd.DataFrame):
 
 
 
+
+def render_interactive_cumulative_minutes_chart(cumulative_minutes: pd.DataFrame):
+    """
+    Render cumulative minutes with a clickable legend.
+
+    Native st.line_chart legends are not reliably clickable across Streamlit versions.
+    Altair legend binding gives us real click-to-focus behavior.
+    """
+    if cumulative_minutes.empty:
+        st.info("本月还没有可展示的累计数据。")
+        return
+
+    try:
+        import altair as alt
+    except Exception:
+        st.caption("当前环境不支持交互式图例，暂时使用普通折线图。")
+        st.line_chart(cumulative_minutes)
+        return
+
+    plot_df = cumulative_minutes.copy()
+    plot_df.index.name = "日期"
+
+    long_df = (
+        plot_df.reset_index()
+        .melt(
+            id_vars="日期",
+            var_name="姓名",
+            value_name="累计分钟",
+        )
+        .dropna(subset=["姓名", "累计分钟"])
+    )
+
+    if long_df.empty:
+        st.info("本月还没有可展示的累计数据。")
+        return
+
+    name_selection = alt.selection_point(
+        fields=["姓名"],
+        bind="legend",
+    )
+
+    chart = (
+        alt.Chart(long_df)
+        .mark_line(point=False)
+        .encode(
+            x=alt.X("日期:T", title="日期"),
+            y=alt.Y("累计分钟:Q", title="累计运动时长（分钟）"),
+            color=alt.Color("姓名:N", title="点击姓名高亮"),
+            opacity=alt.condition(
+                name_selection,
+                alt.value(1.0),
+                alt.value(0.08),
+            ),
+            tooltip=[
+                alt.Tooltip("日期:T", title="日期", format="%Y-%m-%d"),
+                alt.Tooltip("姓名:N", title="姓名"),
+                alt.Tooltip("累计分钟:Q", title="累计分钟"),
+            ],
+        )
+        .add_params(name_selection)
+        .properties(height=420)
+    )
+
+    st.caption(
+        "点击右侧图例中的名字，可以只高亮对应成员；按住 Shift 可多选。"
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+
 # -----------------------------
 # Dashboard tab
 # -----------------------------
@@ -4507,11 +4577,7 @@ with tab_dashboard:
 
         cumulative_month = make_cumulative_minutes(df_month, month_start, month_end)
 
-        if cumulative_month.empty:
-            st.info("本月还没有可展示的累计数据。")
-        else:
-            st.caption("线条较多时，可以点击图例中的名字，隐藏或查看对应成员的线条。")
-            st.line_chart(cumulative_month)
+        render_interactive_cumulative_minutes_chart(cumulative_month)
 
         st.divider()
 
