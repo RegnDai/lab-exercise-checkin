@@ -4510,6 +4510,7 @@ with tab_dashboard:
         if cumulative_month.empty:
             st.info("本月还没有可展示的累计数据。")
         else:
+            st.caption("线条较多时，可以点击图例中的名字，隐藏或查看对应成员的线条。")
             st.line_chart(cumulative_month)
 
         st.divider()
