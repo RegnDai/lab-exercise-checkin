@@ -3032,6 +3032,272 @@ def render_selection_heatmaps(monthly_heatmap_detail: pd.DataFrame):
 
 
 
+
+def _honor_rank_label(rank_value) -> str:
+    try:
+        rank = int(rank_value)
+    except Exception:
+        return str(rank_value)
+
+    labels = {
+        1: "🥇 第一名",
+        2: "🥈 第二名",
+        3: "🥉 第三名",
+    }
+
+    return labels.get(rank, f"第 {rank} 名")
+
+
+def make_monthly_honor_wall(df_all: pd.DataFrame, today) -> pd.DataFrame:
+    columns = [
+        "月份",
+        "名次",
+        "姓名",
+        "有效运动次数",
+        "总运动时长",
+        "总运动次数",
+        "半次运动达标记录数",
+        "半次运动计入次数",
+    ]
+
+    if df_all.empty:
+        return pd.DataFrame(columns=columns)
+
+    target_checkins, target_minutes = _selection_goal_settings()
+    active_members = _selection_active_members(df_all)
+
+    df = df_all.copy()
+    df["activity_date"] = pd.to_datetime(df["activity_date"], errors="coerce")
+    df = df.dropna(subset=["activity_date"])
+
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    if active_members:
+        df = df[df["name"].isin(active_members)].copy()
+
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    df["月份"] = df["activity_date"].dt.to_period("M").astype(str)
+
+    monthly = summarize_goal_credits(
+        df,
+        ["name", "月份"],
+        target_minutes,
+    ).rename(
+        columns={
+            "name": "姓名",
+            "总打卡次数": "总运动次数",
+            "总运动分钟": "总运动时长",
+        }
+    )
+
+    if monthly.empty:
+        return pd.DataFrame(columns=columns)
+
+    # Only people with at least some effective progress enter the monthly wall.
+    monthly = monthly[monthly["有效运动次数"] > 0].copy()
+
+    if monthly.empty:
+        return pd.DataFrame(columns=columns)
+
+    monthly["有效运动次数"] = monthly["有效运动次数"].astype(float)
+    monthly["总运动时长"] = monthly["总运动时长"].astype(int)
+    monthly["总运动次数"] = monthly["总运动次数"].astype(int)
+
+    monthly = monthly.sort_values(
+        ["月份", "有效运动次数", "总运动时长", "姓名"],
+        ascending=[False, False, False, True],
+    ).reset_index(drop=True)
+
+    monthly["名次"] = monthly.groupby("月份").cumcount() + 1
+
+    honor_wall = monthly[monthly["名次"] <= 3].copy()
+
+    return honor_wall[
+        [
+            "月份",
+            "名次",
+            "姓名",
+            "有效运动次数",
+            "总运动时长",
+            "总运动次数",
+            "半次运动达标记录数",
+            "半次运动计入次数",
+        ]
+    ]
+
+
+def render_monthly_honor_wall(df_all: pd.DataFrame, today):
+    st.caption(
+        "每个月单独评选前三名：先按有效运动次数排序；"
+        "有效运动次数并列时，再按总运动时长排序。"
+    )
+
+    honor_wall = make_monthly_honor_wall(df_all, today)
+
+    if honor_wall.empty:
+        st.info("还没有可展示的历史前三。")
+        return
+
+    available_months = sorted(
+        honor_wall["月份"].dropna().astype(str).unique().tolist(),
+        reverse=True,
+    )
+
+    selected_honor_months = st.multiselect(
+        "选择要统计的月份",
+        options=available_months,
+        default=available_months,
+        format_func=_selection_month_label,
+        help="可以选择一个或多个自然月。下面的荣誉统计和历史前三明细都会按所选月份重算。",
+        key="monthly_honor_wall_selected_months",
+    )
+
+    if not selected_honor_months:
+        st.warning("请至少选择一个月份。")
+        return
+
+    filtered_honor = honor_wall[
+        honor_wall["月份"].isin(selected_honor_months)
+    ].copy()
+
+    if filtered_honor.empty:
+        st.info("所选月份里还没有历史前三。")
+        return
+
+    filtered_honor = filtered_honor.sort_values(
+        ["月份", "名次"],
+        ascending=[False, True],
+    ).reset_index(drop=True)
+
+    def _rank_months(name: str, rank: int) -> str:
+        months = (
+            filtered_honor[
+                (filtered_honor["姓名"].astype(str) == str(name))
+                & (filtered_honor["名次"].astype(int) == int(rank))
+            ]["月份"]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+
+        months = sorted(months, reverse=True)
+
+        if not months:
+            return "—"
+
+        return "、".join(_selection_month_label(month) for month in months)
+
+    appeared_names = sorted(
+        filtered_honor["姓名"].dropna().astype(str).unique().tolist()
+    )
+
+    rank_count_map = (
+        filtered_honor.groupby(["姓名", "名次"])
+        .size()
+        .to_dict()
+    )
+
+    summary_rows = []
+
+    for name in appeared_names:
+        first_count = int(rank_count_map.get((name, 1), 0))
+        second_count = int(rank_count_map.get((name, 2), 0))
+        third_count = int(rank_count_map.get((name, 3), 0))
+
+        summary_rows.append(
+            {
+                "姓名": name,
+                "第一次数": first_count,
+                "第一月份": _rank_months(name, 1),
+                "第二次数": second_count,
+                "第二月份": _rank_months(name, 2),
+                "第三次数": third_count,
+                "第三月份": _rank_months(name, 3),
+                "获奖总次数": first_count + second_count + third_count,
+            }
+        )
+
+    honor_summary = pd.DataFrame(summary_rows)
+
+    if not honor_summary.empty:
+        honor_summary = honor_summary.sort_values(
+            ["第一次数", "第二次数", "第三次数", "获奖总次数", "姓名"],
+            ascending=[False, False, False, False, True],
+        ).reset_index(drop=True)
+
+    selected_label = "、".join(
+        _selection_month_label(month)
+        for month in sorted(selected_honor_months, reverse=True)
+    )
+
+    st.markdown("#### 荣誉统计")
+    st.caption(f"当前统计月份：{selected_label}")
+
+    if honor_summary.empty:
+        st.info("当前筛选下没有可统计的荣誉记录。")
+    else:
+        render_blue_table(
+            honor_summary,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("#### 历史前三明细")
+
+    export_view = filtered_honor.copy()
+    export_view["月份"] = export_view["月份"].map(_selection_month_label)
+
+    display_view = export_view.copy()
+    display_view["名次"] = display_view["名次"].apply(_honor_rank_label)
+    display_view["有效运动次数"] = display_view["有效运动次数"].apply(format_goal_credit)
+    display_view["半次运动计入次数"] = display_view["半次运动计入次数"].apply(format_goal_credit)
+
+    render_blue_table(
+        display_view,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    download_col1, download_col2 = st.columns(2)
+
+    with download_col1:
+        st.download_button(
+            label="导出当前筛选历史前三 CSV",
+            data=export_view.to_csv(index=False).encode("utf-8-sig"),
+            file_name="monthly_honor_wall_top3_filtered.csv",
+            mime="text/csv",
+        )
+
+    with download_col2:
+        st.download_button(
+            label="导出当前筛选荣誉统计 CSV",
+            data=honor_summary.to_csv(index=False).encode("utf-8-sig"),
+            file_name="monthly_honor_wall_summary_filtered.csv",
+            mime="text/csv",
+            disabled=honor_summary.empty,
+        )
+
+    with st.expander("按月份查看"):
+        for month in sorted(filtered_honor["月份"].drop_duplicates().tolist(), reverse=True):
+            month_view = filtered_honor[filtered_honor["月份"] == month].copy()
+            month_view["月份"] = month_view["月份"].map(_selection_month_label)
+            month_view["名次"] = month_view["名次"].apply(_honor_rank_label)
+            month_view["有效运动次数"] = month_view["有效运动次数"].apply(format_goal_credit)
+            month_view["半次运动计入次数"] = month_view["半次运动计入次数"].apply(format_goal_credit)
+
+            st.markdown(f"##### {_selection_month_label(month)}")
+            render_blue_table(
+                month_view,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+
 def render_selection_board(df_all: pd.DataFrame, today):
     available_months = _selection_available_months(df_all, today)
     default_months = _selection_default_months(available_months, today)
@@ -3153,8 +3419,8 @@ def render_selection_board(df_all: pd.DataFrame, today):
 
     st.divider()
 
-    selection_tab1, selection_tab2, selection_tab3 = st.tabs(
-        ["候选汇总", "满勤 / 进步展示", "月度明细"]
+    selection_tab1, selection_tab_honor, selection_tab2, selection_tab3 = st.tabs(
+        ["候选汇总", "历史荣誉墙", "满勤 / 进步展示", "月度明细"]
     )
 
     with selection_tab1:
@@ -3214,6 +3480,10 @@ def render_selection_board(df_all: pd.DataFrame, today):
                 file_name="selection_metrics_selected_months.csv",
                 mime="text/csv",
             )
+
+    with selection_tab_honor:
+        st.markdown("#### 历史荣誉墙")
+        render_monthly_honor_wall(df_all, today)
 
     with selection_tab2:
         left, right = st.columns(2)
