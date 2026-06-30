@@ -351,6 +351,7 @@ ACTIVITY_TYPES = [
     "足球",
     "排球",
     "网球",
+    "匹克球",
     "台球",
     "舞蹈",
     "健身操",
@@ -3601,6 +3602,8 @@ def _activity_emoji(activity_type: str) -> str:
         return "🧘"
     if any(x in joined for x in ["呼啦圈"]):
         return "⭕"
+    if any(x in joined for x in ["匹克球"]):
+        return "🏓"
     if any(x in joined for x in ["台球"]):
         return "🎱"
     if any(x in joined for x in ["篮球", "足球", "排球", "羽毛球", "乒乓球", "网球"]):
