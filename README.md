@@ -1,65 +1,206 @@
-# 实验室运动打卡（重构版）
+# Lab Exercise Check-in
 
-基于 Streamlit + Supabase。相对旧版单文件 `app.py`（约 3000 行），这一版做了结构重构、性能修复和功能增强，**数据库主表结构不变，旧数据直接兼容**。
+A lightweight Streamlit application for recording, reviewing, and summarizing exercise check-ins in a small-group setting.
 
-## 目录结构
+The app supports exercise submissions, image uploads, personal progress views, group dashboards, community interactions, selection summaries, audit records, and admin review.
 
+## Features
+
+* Exercise check-in form with activity type, duration, date, mood, notes, and optional image upload
+* Invite-code based access gate
+* Personal dashboard with monthly progress, streaks, and achievement badges
+* Group dashboard with monthly/weekly summaries and activity statistics
+* Community page with photo gallery, reactions, and comments
+* Selection and recognition views for periodic review
+* Audit page for lightweight random review of submitted records
+* Admin page for record management
+* Image compression before upload
+* Streamlit multi-page navigation
+* Rule-layer tests for check-in calculation logic
+
+## Tech Stack
+
+* Python
+* Streamlit
+* Supabase
+* pandas
+* Pillow
+* Altair
+
+## Repository Structure
+
+```text
+.
+├── app.py                  # Streamlit entrypoint and page navigation
+├── core/
+│   ├── config.py           # Centralized configuration
+│   ├── db.py               # Supabase access and cached data loading
+│   ├── images.py           # Image processing and upload helpers
+│   └── rules.py            # Check-in rules and calculation logic
+├── ui/
+│   ├── components.py       # Reusable UI components
+│   └── style.py            # Shared app styling
+├── views/
+│   ├── checkin.py          # Check-in page
+│   ├── me.py               # Personal dashboard
+│   ├── dashboard.py        # Group dashboard
+│   ├── community.py        # Community interactions and gallery
+│   ├── selection.py        # Selection and recognition views
+│   ├── audit.py            # Audit workflow
+│   └── admin.py            # Admin tools
+├── tests/
+│   └── test_rules.py       # Rule-layer tests
+├── requirements.txt
+└── README.md
 ```
-app.py                 # 入口：邀请码门禁 + st.navigation 多页面
-core/
-  config.py            # 所有配置与 secrets 读取
-  rules.py             # 规则计算（纯函数，可单测）：解析、半次折算、达标、徽章
-  db.py                # Supabase 客户端、读缓存、签名链接缓存、写操作
-  images.py            # 图片压缩与上传
-ui/
-  style.py             # 全局 CSS（统一设计 token）
-  components.py        # 蓝色表格 / 统计卡 / 能量碗 / 进度环 / 徽章 / 图表
-views/
-  checkin.py           # 打卡（手机端优化）
-  me.py                # 「我的」个人主页（新增）
-  dashboard.py         # 看板 = 总览 + 本月达标 + 能量池 + 周报
-  community.py         # 社区 = 留言板（回应+回复）+ 相册
-  selection.py         # 评选 + 荣誉墙 + 热图
-  audit.py             # 随机监督 + 抽查结果记录（新增闭环）
-  admin.py             # 后台
-tests/test_rules.py    # 规则层单元测试（11 个用例，改规则前后跑一遍）
-.streamlit/config.toml # 锁定浅色主题（自定义样式为浅色系）
+
+## Quick Start
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/RegnDai/lab-exercise-checkin.git
+cd lab-exercise-checkin
 ```
 
-## 部署
+### 2. Create an environment
 
-1. `pip install -r requirements.txt`（需要 Streamlit ≥ 1.40，多页面用到 `st.navigation`）
-2. 配置 `.streamlit/secrets.toml`（见下）
-3. `streamlit run app.py`
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
 
-### secrets.toml 模板
+On Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure Streamlit secrets
+
+Create a local file:
+
+```text
+.streamlit/secrets.toml
+```
+
+Example:
 
 ```toml
-SUPABASE_URL = "https://xxxx.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY = "..."
-INVITE_CODE = "..."
-ADMIN_PASSWORD = "..."
+SUPABASE_URL = "https://your-project.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
+INVITE_CODE = "your-invite-code"
+ADMIN_PASSWORD = "your-admin-password"
 
-MEMBERS = ["王平", "李城炫", "..."]
-# ACTIVE_MEMBERS = [...]          # 可选：参与本月目标的成员，缺省用 MEMBERS
+MEMBERS = ["Member A", "Member B", "Member C"]
 
-# 以下均可选，有默认值
-# BUCKET_NAME = "checkin-images"
-# MONTHLY_TARGET_CHECKINS_PER_PERSON = 8
-# FEMALE_MONTHLY_TARGET_CHECKINS = 7
-# MONTHLY_TARGET_MINUTES_PER_CHECKIN = 30
-# HALF_CREDIT_RECORD_CAP = 8
-# BACKFILL_GRACE_DAYS = 2          # 提交比运动日期晚 N 天以上标记为补卡
-# SELECTION_DEFAULT_MONTHS = 3
-# SELECTION_RECORD_KEEPER = "某某"
+# Optional
+ACTIVE_MEMBERS = ["Member A", "Member B"]
+BUCKET_NAME = "checkin-images"
+APP_TIMEZONE = "Asia/Shanghai"
+
+MONTHLY_TARGET_CHECKINS_PER_PERSON = 8
+FEMALE_MONTHLY_TARGET_CHECKINS = 7
+MONTHLY_TARGET_MINUTES_PER_CHECKIN = 30
+MIN_SUBMIT_MINUTES = 30
+
+HALF_CREDIT_RECORD_CAP = 8
+HALF_CREDIT_GOAL_CREDIT = 0.5
+BACKFILL_GRACE_DAYS = 2
+SELECTION_DEFAULT_MONTHS = 3
+MAX_UPLOAD_MB = 3
+MAX_SOURCE_UPLOAD_MB = 15
+MAX_STORED_IMAGE_MB = 3
+IMAGE_COMPRESSION_ENABLED = true
+IMAGE_MAX_SIDE = 1600
+IMAGE_JPEG_QUALITY = 82
 ```
 
-## 新功能需要的两张表（可选，不建也能跑，对应功能自动隐藏）
+Do not commit `.streamlit/secrets.toml`.
 
-在 Supabase SQL Editor 执行：
+## Supabase Setup
+
+The app expects a Supabase project with database tables for check-in records and community/audit interactions, plus a storage bucket for uploaded images.
+
+### Required storage bucket
+
+Create a Supabase Storage bucket. The default bucket name is:
+
+```text
+checkin-images
+```
+
+You can override it with:
+
+```toml
+BUCKET_NAME = "your-bucket-name"
+```
+
+### Main check-in table
+
+The app writes check-in records to `exercise_checkins`.
+
+A minimal compatible table should include fields similar to:
 
 ```sql
--- 监督抽查结果（「我要监督！」页的闭环记录）
+create table if not exists exercise_checkins (
+  id bigint generated by default as identity primary key,
+  name text not null,
+  activity_date date not null,
+  activity_type text not null,
+  duration_min integer not null,
+  mood_key text,
+  note text,
+  file_path text,
+  file_name text,
+  file_mime text,
+  file_size bigint,
+  submitted_at timestamptz not null default now()
+);
+```
+
+If you are migrating from an earlier version, compare this schema with your existing table before applying changes.
+
+### Message reactions
+
+The community page can use a `message_reactions` table and an RPC function to increment reaction counts.
+
+Example:
+
+```sql
+create table if not exists message_reactions (
+  id bigint generated by default as identity primary key,
+  checkin_id bigint not null,
+  emoji_key text not null,
+  reaction_count integer not null default 0,
+  unique (checkin_id, emoji_key)
+);
+
+create or replace function increment_message_reaction(
+  p_checkin_id bigint,
+  p_emoji_key text
+)
+returns void
+language plpgsql
+as $$
+begin
+  insert into message_reactions (checkin_id, emoji_key, reaction_count)
+  values (p_checkin_id, p_emoji_key, 1)
+  on conflict (checkin_id, emoji_key)
+  do update set reaction_count = message_reactions.reaction_count + 1;
+end;
+$$;
+```
+
+### Optional audit table
+
+```sql
 create table if not exists audit_logs (
   id bigint generated by default as identity primary key,
   checkin_id bigint not null,
@@ -68,8 +209,11 @@ create table if not exists audit_logs (
   note text,
   created_at timestamptz not null default now()
 );
+```
 
--- 留言板文字回复
+### Optional comment table
+
+```sql
 create table if not exists message_comments (
   id bigint generated by default as identity primary key,
   checkin_id bigint not null,
@@ -77,49 +221,74 @@ create table if not exists message_comments (
   content text not null,
   created_at timestamptz not null default now()
 );
+
 create index if not exists idx_message_comments_checkin
   on message_comments (checkin_id);
 ```
 
-`message_reactions` 表和 `increment_message_reaction` RPC 沿用旧版，无需改动。
-
-## 相对旧版的变化
-
-### 修复的问题
-- **NameError 启动崩溃**：旧版在文件顶部解析 `HALF_CREDIT_ACTIVITY_TYPES`（字符串形式）时调用了尚未定义的 `split_activity_types`；现在解析移入 `core/rules.py`。
-- **相册 / 后台图片性能**：签名链接改为 `@st.cache_data(ttl=1800)` 缓存，翻一次页从 13 次 Storage API 调用降到 0 次（命中缓存时）。
-- **九个 tab 全量执行**：改用 `st.navigation` 多页面，只执行当前页面，页面明显变快。
-- **提交时间时区不一致**：`submitted_at` 统一使用 `APP_TIMEZONE`（旧版用服务器时区）。
-- **CSS 重复注入 / 重复代码**：样式收敛为一份 token 化 CSS；`月目标次数.astype(int)` 等重复行清理。
-- **深色模式下白底白字**：`config.toml` 锁定浅色主题。
-- **表格 XSS 隐患**：自定义 HTML 表格在需要内嵌进度条（escape=False）时，对其余所有单元格手动 escape。
-
-### 新增功能
-- **「我的」个人主页**：本月目标进度环、当前/最长连续打卡天数、累计统计、12 枚成就徽章（连续 7/14 天、多面手、千分钟俱乐部、早鸟、三月连冠……）、个人心情日历（原运动日记并入此页）。
-- **周报卡片**：看板顶部自动生成上周摘要（总分钟环比、本周之星、最热运动），附一键复制的文字版方便发群。
-- **监督闭环**：抽查后可记录「✅ 相符 / ⚠️ 存疑」+ 备注，存疑数量在历史里可见。
-- **留言板文字回复**：在表情回应之外增加一层轻量评论。
-- **补卡标记**：提交时间比运动日期晚 `BACKFILL_GRACE_DAYS` 天以上的记录，在最近记录 / 个人记录中显示「⏪ 补卡」，防止月底集中补卡看不出来。
-- **达标进度条**：本月达标表的进度列渲染为迷你进度条，一眼看出远近。
-- **图表统一蓝色系**：柱状图从默认 `st.bar_chart` 换成 Altair 蓝色渐变，与整体视觉一致。
-
-### 页面结构
-旧版 9 个 tab → 新版 3 组 7 页：
-
-| 分组 | 页面 | 对应旧版 |
-|---|---|---|
-| 记录 | 打卡 / 我的 | 打卡；运动日记（并入我的） |
-| 看板 | 运动看板 / 社区 | 总览 + 本月目标（合并）；留言板 + 相册（合并） |
-| 评选与管理 | 评选 / 我要监督！/ 后台 | 评选；我要监督；后台 |
-
-## 测试
+## Run Locally
 
 ```bash
-python tests/test_rules.py        # 或 python -m pytest tests/
+streamlit run app.py
 ```
 
-覆盖：多类型解析、半次判定、同日去重、半次 0.5 折算、普通优先于半次、时长门槛、半次 8 条封顶、男女目标差异、连续天数计算。**改打卡规则时先改 `core/rules.py`，再跑测试。**
+Then open the local Streamlit URL shown in the terminal.
 
-## 安全提示（未改动，建议知晓）
+## Testing
 
-前端目前使用 `SERVICE_ROLE_KEY` + 共享邀请码，拿到邀请码等于拥有数据库全权。实验室内部使用可接受；若要更规范，可改用 anon key + Supabase RLS 策略，service key 仅保留给后台操作。
+Run the rule-layer tests before changing check-in logic:
+
+```bash
+python tests/test_rules.py
+```
+
+Or, if `pytest` is installed:
+
+```bash
+python -m pytest tests/
+```
+
+The tests cover activity parsing, same-day deduplication, half-credit rules, duration thresholds, monthly target calculations, and streak calculation.
+
+## Configuration Notes
+
+Key behavior is controlled through Streamlit secrets rather than hard-coded values where possible.
+
+Important options include:
+
+| Key                                  | Purpose                                                         |
+| ------------------------------------ | --------------------------------------------------------------- |
+| `MEMBERS`                            | Names shown in the check-in form                                |
+| `ACTIVE_MEMBERS`                     | Optional subset used for monthly target statistics              |
+| `APP_TIMEZONE`                       | Timezone used for submitted records and summaries               |
+| `BUCKET_NAME`                        | Supabase Storage bucket for uploaded images                     |
+| `MIN_SUBMIT_MINUTES`                 | Minimum duration required for one submission                    |
+| `MONTHLY_TARGET_CHECKINS_PER_PERSON` | Default monthly target                                          |
+| `FEMALE_MONTHLY_TARGET_CHECKINS`     | Optional alternate monthly target                               |
+| `HALF_CREDIT_RECORD_CAP`             | Maximum number of half-credit records counted toward the goal   |
+| `BACKFILL_GRACE_DAYS`                | Number of days after which a submission is marked as backfilled |
+
+## Privacy and Security
+
+This project is designed for small-group internal use.
+
+Before making the repository public or deploying it broadly:
+
+* Do not commit real names, private member lists, invite codes, passwords, Supabase URLs, API keys, or screenshots.
+* Keep `.streamlit/secrets.toml` out of version control.
+* Use placeholder names in documentation and examples.
+* Review source files and tests for hard-coded personal information.
+* Avoid using production credentials in local development.
+* Restrict Supabase access as much as possible for your deployment model.
+* Consider using Supabase Row Level Security and narrower API keys for public or semi-public deployments.
+* Treat uploaded exercise screenshots as private user data.
+
+## Development Notes
+
+The app uses Streamlit page navigation so that only the active page is executed. Data loading and signed image URLs are cached to reduce repeated Supabase calls.
+
+Most rule-related behavior should be changed in `core/rules.py`, with corresponding tests added or updated in `tests/test_rules.py`.
+
+## License
+
+No license has been specified yet. Add a license file before distributing or reusing this project outside its original context.
